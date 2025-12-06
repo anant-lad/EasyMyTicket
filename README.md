@@ -12,6 +12,9 @@ An intelligent ticket classification system that uses LLM (GROQ) to extract meta
 - **Database Exploration API**: Browse and explore database tables and data
 - **Modular Architecture**: Clean, organized codebase with separation of concerns
 
+## Workflow
+workflow.png
+
 ## Prerequisites
 
 - Python 3.8+
