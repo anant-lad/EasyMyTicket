@@ -26,14 +26,24 @@ pip install -r requirements.txt
 ```
 
 2. **Set Environment Variables**:
-Create a `.env` file or export environment variables:
+Create a `.env` file in the project root with the following variables:
+```bash
+GROQ_API_KEY=your_groq_api_key_here
+DB_HOST=localhost
+DB_PORT=5433
+DB_NAME=tickets_db
+DB_USER=admin
+DB_PASSWORD=your_database_password_here
+```
+
+Or export them as environment variables:
 ```bash
 export GROQ_API_KEY='your_groq_api_key_here'
 export DB_HOST=localhost
 export DB_PORT=5433
 export DB_NAME=tickets_db
 export DB_USER=admin
-export DB_PASSWORD=admin@1234
+export DB_PASSWORD='your_database_password_here'
 ```
 
 3. **Start PostgreSQL Database** (if not already running):
@@ -44,11 +54,13 @@ export DB_PASSWORD=admin@1234
 # Option 2: Manual Docker command
 docker run --name Autotask \
   -e POSTGRES_USER=admin \
-  -e POSTGRES_PASSWORD=admin@1234 \
+  -e POSTGRES_PASSWORD=your_database_password_here \
   -e POSTGRES_DB=tickets_db \
   -p 5433:5432 \
   -v postgres-new-data:/var/lib/postgresql \
   -d postgres:18
+
+**Note:** Replace `your_database_password_here` with your actual database password. Make sure it matches the `DB_PASSWORD` in your `.env` file.
 ```
 
 4. **Initialize Database Tables**:
@@ -235,6 +247,7 @@ EasyMyTicket/
 ├── dataset/                     # Data files
 │   └── ticket_data_updated.csv # Historical ticket data
 ├── start_database.sh           # Database startup script
+├── workflow.png                # Workflow diagram
 ├── requirements.txt            # Python dependencies
 └── README.md                   # This file
 ```
@@ -275,22 +288,25 @@ EasyMyTicket/
 
 ## Workflow
 
+![Workflow Diagram](workflow.png)
+
 1. **Ticket Creation**: User creates a ticket via API with title, description, user_id, and optional due_date_time
-2. **Metadata Extraction**: Intake agent extracts structured metadata using LLM (llama3-8b)
-3. **Similarity Search**: System finds similar historical tickets from database
-4. **Classification**: Agent classifies ticket using LLM (mixtral-8x7b) based on metadata and similar tickets
+2. **Metadata Extraction**: Intake agent extracts structured metadata using LLM (`llama-3.1-8b-instant`)
+3. **Similarity Search**: System finds similar historical tickets from `closed_tickets` table using semantic embeddings
+4. **Classification**: Agent classifies ticket using LLM (`llama-3.3-70b-versatile`) based on metadata and similar tickets
 5. **Database Storage**: Ticket is stored in `new_tickets` table with all classifications
 
 ## Models Used
 
-- **Metadata Extraction**: `llama3-8b-8192` (via GROQ)
-- **Classification**: `mixtral-8x7b-32768` (via GROQ)
+- **Metadata Extraction**: `llama-3.1-8b-instant` (via GROQ)
+- **Classification**: `llama-3.3-70b-versatile` (via GROQ)
 
 ## Database Schema
 
 The system uses the following tables:
 - `new_tickets`: Newly created tickets
-- `resolved_tickets`: Historical resolved tickets (used for similarity search)
+- `resolved_tickets`: Historical resolved tickets
+- `closed_tickets`: Historical closed tickets (used for similarity search)
 - `technician_data`: Technician information
 - `user_data`: User information
 

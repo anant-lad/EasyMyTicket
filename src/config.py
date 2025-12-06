@@ -16,7 +16,7 @@ class Config:
     DB_PORT = int(os.getenv('DB_PORT', 5433))
     DB_NAME = os.getenv('DB_NAME', 'tickets_db')
     DB_USER = os.getenv('DB_USER', 'admin')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'admin@1234')
+    DB_PASSWORD = os.getenv('DB_PASSWORD', '')  # Must be set in .env file
     
     # GROQ API configuration
     GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
@@ -54,5 +54,7 @@ class Config:
         """Validate required configuration"""
         if not cls.GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY environment variable is not set")
+        if not cls.DB_PASSWORD:
+            raise ValueError("DB_PASSWORD environment variable is not set. Please set it in your .env file")
         return True
 

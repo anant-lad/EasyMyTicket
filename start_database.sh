@@ -26,9 +26,21 @@ if docker ps -a 2>/dev/null | grep -q Autotask; then
     fi
 else
     echo "Container does not exist. Creating it..."
+    
+    # Load database password from environment or .env file
+    if [ -f .env ]; then
+        export $(grep -v '^#' .env | xargs)
+    fi
+    
+    POSTGRES_PASSWORD=${DB_PASSWORD:-"change_me_in_env_file"}
+    
+    if [ "$POSTGRES_PASSWORD" = "change_me_in_env_file" ]; then
+        echo "⚠ WARNING: DB_PASSWORD not set. Using default password. Please set DB_PASSWORD in .env file for production!"
+    fi
+    
     docker run --name Autotask \
       -e POSTGRES_USER=admin \
-      -e POSTGRES_PASSWORD=admin@1234 \
+      -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
       -e POSTGRES_DB=tickets_db \
       -p 5433:5432 \
       -v postgres-new-data:/var/lib/postgresql \
@@ -45,9 +57,10 @@ if docker exec Autotask pg_isready -U admin > /dev/null 2>&1; then
     echo "  Port: 5433"
     echo "  Database: tickets_db"
     echo "  User: admin"
-    echo "  Password: admin@1234"
+    echo "  Password: [Set in .env file as DB_PASSWORD]"
 else
     echo "⚠ PostgreSQL is starting up. Please wait a few more seconds."
     echo "Check status with: docker logs Autotask"
 fi
 
+git 
