@@ -1,0 +1,81 @@
+# Core Web Framework Dependencies
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+sentence-transformers
+pandas
+numpy
+torch
+websockets
+jinja2
+aiofiles
+
+
+# Database Dependencies (PostgreSQL)
+psycopg2-binary
+asyncpg
+sqlalchemy
+alembic
+databases
+
+
+# Authentication & Security
+python-jose[cryptography]
+passlib[bcrypt]
+PyJWT
+
+
+# HTTP Client Dependencies
+requests
+httpx
+
+
+# Google API Dependencies (Calendar + Gmail + Pub/Sub)
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+google-cloud-pubsub
+
+
+# Image Processing Dependencies
+Pillow
+pytesseract
+opencv-python
+
+
+# Data Science & Analytics Dependencies
+numpy
+pandas
+scikit-learn
+matplotlib
+plotly
+
+
+# Semantic Search & Embeddings
+sentence-transformers
+pgvector
+
+
+# Utility Dependencies
+python-dotenv
+schedule
+pytz
+
+
+# Streamlit for Dashboard
+streamlit
+
+
+# AI/LLM Dependencies
+openai
+groq
+
+
+# Development & Testing Dependencies
+pytest
+pytest-asyncio
+black
+flake8
