@@ -53,7 +53,7 @@ class Config:
     def validate(cls):
         """Validate required configuration"""
         if not cls.GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY environment variable is not set")
+            raise ValueError("GROQ_API_KEY environment variable is not set. Please set it in your .env file")
         if not cls.DB_PASSWORD:
             raise ValueError("DB_PASSWORD environment variable is not set. Please set it in your .env file")
         return True

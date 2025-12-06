@@ -13,6 +13,7 @@ An intelligent ticket classification system that uses LLM (GROQ) to extract meta
 - **Modular Architecture**: Clean, organized codebase with separation of concerns
 
 ## Workflow
+
 workflow.png
 
 ## Prerequisites
@@ -24,80 +25,97 @@ workflow.png
 ## Setup
 
 1. **Install Dependencies**:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 2. **Set Environment Variables**:
-Create a `.env` file in the project root with the following variables:
-```bash
-GROQ_API_KEY=your_groq_api_key_here
-DB_HOST=localhost
-DB_PORT=5433
-DB_NAME=tickets_db
-DB_USER=admin
-DB_PASSWORD=your_database_password_here
-```
+   **IMPORTANT:** All credentials must be set in a `.env` file. No credentials are stored in code files.
 
-Or export them as environment variables:
-```bash
-export GROQ_API_KEY='your_groq_api_key_here'
-export DB_HOST=localhost
-export DB_PORT=5433
-export DB_NAME=tickets_db
-export DB_USER=admin
-export DB_PASSWORD='your_database_password_here'
-```
+   Create a `.env` file in the project root. You can copy from the example file:
 
+   ```bash
+   cp .env.example .env
+   ```
+
+   Then edit `.env` and set your actual values:
+
+   ```bash
+   GROQ_API_KEY=your_groq_api_key_here
+   DB_HOST=localhost
+   DB_PORT=5433
+   DB_NAME=tickets_db
+   DB_USER=USER
+   DB_PASSWORD=PASSWORD
+   ```
+
+   **Security Notes:**
+
+   - The `.env` file is required for the application to run
+   - Never commit the `.env` file to version control (it's already in `.gitignore`)
+   - All credentials are read from environment variables only - no hardcoded values in code
+   - Replace `your_groq_api_key_here` with your actual GROQ API key
+   - Replace `PASSWORD` with your desired database password
 3. **Start PostgreSQL Database** (if not already running):
+
 ```bash
 # Option 1: Use the helper script
 ./start_database.sh
 
 # Option 2: Manual Docker command
+# Make sure to set DB_PASSWORD in your .env file first, then:
+source .env  # Load environment variables
 docker run --name Autotask \
-  -e POSTGRES_USER=admin \
-  -e POSTGRES_PASSWORD=your_database_password_here \
+  -e POSTGRES_USER=USER \
+  -e POSTGRES_PASSWORD="$DB_PASSWORD" \
   -e POSTGRES_DB=tickets_db \
   -p 5433:5432 \
   -v postgres-new-data:/var/lib/postgresql \
   -d postgres:18
 
-**Note:** Replace `your_database_password_here` with your actual database password. Make sure it matches the `DB_PASSWORD` in your `.env` file.
+**Note:** The `DB_PASSWORD` must be set in your `.env` file. The script will automatically load it.
 ```
 
 4. **Initialize Database Tables**:
+
 ```bash
 python scripts/init_database.py
 ```
 
 5. **Import Historical Tickets** (optional):
+
 ```bash
 python scripts/import_closed_tickets.py
 ```
 
 6. **Run the Application**:
+
 ```bash
 python main.py
 ```
 
 Or using uvicorn directly:
+
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 5000 --reload
 ```
 
 The API will be available at `http://localhost:5000`
+
 - **API Documentation (Swagger UI)**: `http://localhost:5000/docs`
 - **Alternative API Documentation (ReDoc)**: `http://localhost:5000/redoc`
 
 ## API Endpoints
 
 ### 1. Create Ticket
+
 **POST** `/api/tickets/create`
 
 Creates a new ticket and automatically processes it through the intake classification agent.
 
 **Request Body**:
+
 ```json
 {
     "title": "Email not working",
@@ -108,6 +126,7 @@ Creates a new ticket and automatically processes it through the intake classific
 ```
 
 **Response**:
+
 ```json
 {
     "success": true,
@@ -142,11 +161,13 @@ Creates a new ticket and automatically processes it through the intake classific
 ```
 
 ### 2. Get All Tickets
+
 **GET** `/api/tickets`
 
 Retrieves all tickets with pagination, filtering, and sorting.
 
 **Query Parameters:**
+
 - `limit` (int): Maximum number of tickets to return (1-1000, default: 50)
 - `offset` (int): Number of tickets to skip for pagination (default: 0)
 - `status` (str, optional): Filter by ticket status (e.g., 'Open', 'Closed', 'In Progress')
@@ -157,6 +178,7 @@ Retrieves all tickets with pagination, filtering, and sorting.
 - `order_direction` (str): Sort direction 'ASC' or 'DESC' (default: 'DESC')
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -169,6 +191,7 @@ Retrieves all tickets with pagination, filtering, and sorting.
 ```
 
 **Example:**
+
 ```bash
 # Get first 50 tickets
 GET /api/tickets
@@ -184,11 +207,13 @@ GET /api/tickets?status=Open&priority=High&order_by=createdate&order_direction=D
 ```
 
 ### 3. Get Ticket
+
 **GET** `/api/tickets/{ticket_number}`
 
 Retrieves ticket details by ticket number.
 
 ### 4. Health Check
+
 **GET** `/api/health`
 
 Checks the health status of the API and database connection.
@@ -196,34 +221,41 @@ Checks the health status of the API and database connection.
 ### 5. Database Management
 
 #### Start Database
+
 **POST** `/api/database/start`
 
 Starts the PostgreSQL Docker container and establishes connection.
 
 #### Database Status
+
 **GET** `/api/database/status`
 
 Get current database connection status.
 
 #### List Tables
+
 **GET** `/api/database/tables`
 
 Get list of all tables with row counts.
 
 #### Table Information
+
 **GET** `/api/database/tables/{table_name}`
 
 Get detailed information about a specific table including columns and sample data.
 
 **Query Parameters:**
+
 - `include_sample` (bool): Include sample data (default: true)
 
 #### Table Data
+
 **GET** `/api/database/tables/{table_name}/data`
 
 Get paginated data from a table.
 
 **Query Parameters:**
+
 - `limit` (int): Number of rows to return (1-1000, default: 50)
 - `offset` (int): Number of rows to skip (default: 0)
 - `order_by` (str): Column name to order by (optional)
@@ -260,31 +292,32 @@ EasyMyTicket/
 ### Components
 
 1. **Config** (`src/config.py`):
+
    - Centralized configuration management
    - Environment variable handling
    - Application settings
-
 2. **DatabaseConnection** (`src/database/db_connection.py`):
+
    - Handles PostgreSQL connections
    - Provides GROQ LLM integration
    - Implements semantic similarity search using embeddings
-
 3. **IntakeClassificationAgent** (`src/agents/intake_classification.py`):
+
    - Extracts metadata from tickets using LLM
    - Classifies tickets based on content and similar tickets
    - Provides fallback classification when LLM fails
-
 4. **Ticket Routes** (`routes/ticket_routes.py`):
+
    - FastAPI REST API endpoints for ticket operations
    - Pydantic models for request/response validation
    - Orchestrates the intake classification workflow
-
 5. **Database Routes** (`routes/database_routes.py`):
+
    - Database management endpoints
    - Table exploration and data browsing
    - Database status monitoring
-
 6. **FastAPI Application** (`main.py`):
+
    - Main application setup with CORS middleware
    - Automatic API documentation generation
    - ASGI server (uvicorn) for high performance
@@ -307,6 +340,7 @@ EasyMyTicket/
 ## Database Schema
 
 The system uses the following tables:
+
 - `new_tickets`: Newly created tickets
 - `resolved_tickets`: Historical resolved tickets
 - `closed_tickets`: Historical closed tickets (used for similarity search)
@@ -334,5 +368,3 @@ curl -X POST http://localhost:5000/api/tickets/create \
 - Create datetime is automatically set to current timestamp
 - Classification uses both LLM analysis and historical ticket patterns
 - Fallback classification is available if LLM calls fail
-
-

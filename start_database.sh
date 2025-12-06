@@ -32,15 +32,16 @@ else
         export $(grep -v '^#' .env | xargs)
     fi
     
-    POSTGRES_PASSWORD=${DB_PASSWORD:-"change_me_in_env_file"}
-    
-    if [ "$POSTGRES_PASSWORD" = "change_me_in_env_file" ]; then
-        echo "⚠ WARNING: DB_PASSWORD not set. Using default password. Please set DB_PASSWORD in .env file for production!"
+    if [ -z "$DB_PASSWORD" ]; then
+        echo "❌ ERROR: DB_PASSWORD is not set!"
+        echo "Please create a .env file in the project root with:"
+        echo "  DB_PASSWORD=your_password_here"
+        exit 1
     fi
     
     docker run --name Autotask \
       -e POSTGRES_USER=admin \
-      -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+      -e POSTGRES_PASSWORD="$DB_PASSWORD" \
       -e POSTGRES_DB=tickets_db \
       -p 5433:5432 \
       -v postgres-new-data:/var/lib/postgresql \
@@ -62,5 +63,3 @@ else
     echo "⚠ PostgreSQL is starting up. Please wait a few more seconds."
     echo "Check status with: docker logs Autotask"
 fi
-
-git 

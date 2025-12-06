@@ -6,7 +6,7 @@ This document describes the modular structure of the Ticket Intake Classificatio
 ## Directory Structure
 
 ```
-EMT/
+EasyMyTicket/
 ├── main.py                          # FastAPI application entry point
 ├── routes/                          # API route handlers
 │   ├── __init__.py
@@ -28,14 +28,17 @@ EMT/
 │   ├── import_closed_tickets.py    # Import historical tickets
 │   ├── import_resolved_tickets.py  # Legacy import script
 │   └── add_user_id_column.py       # Migration script (one-time)
+├── tests/                           # Test suite
+│   ├── __init__.py
+│   └── test_ticket_creation.py     # API integration tests
 ├── dataset/                         # Data files
 │   └── ticket_data_updated.csv     # Historical ticket data
 ├── start_database.sh               # Database startup script
-├── test_ticket_creation.py         # API testing script
+├── .env.example                    # Environment variables template
 ├── requirements.txt                # Python dependencies
 ├── .gitignore                      # Git ignore rules
 ├── README.md                       # Main documentation
-├── TROUBLESHOOTING.md              # Troubleshooting guide
+├── PROJECT_STRUCTURE.md            # This file
 └── workflow.png                    # Workflow diagram
 ```
 
@@ -77,6 +80,12 @@ EMT/
 - Router registration
 - Application startup events
 
+### `tests/`
+- Test suite for API endpoints
+- Integration tests for ticket creation and retrieval
+- Health check tests
+- Test utilities and helpers
+
 ## Key Features
 
 1. **Lazy Loading**: Database connections and agents are created on first use
@@ -98,4 +107,22 @@ Utility scripts are organized in the `scripts/` directory:
 - Database initialization
 - Data import
 - Migration scripts
+
+## Testing
+
+Test files are organized in the `tests/` directory:
+- **`test_ticket_creation.py`**: Integration tests for ticket creation API
+  - Tests ticket creation endpoint
+  - Tests ticket retrieval endpoint
+  - Tests health check endpoint
+  - Validates API responses and data structures
+
+To run tests:
+```bash
+# Run all tests
+python -m pytest tests/
+
+# Run specific test file
+python tests/test_ticket_creation.py
+```
 

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
 Test script for ticket creation API
+Integration tests for the Ticket Intake Classification System
 """
+import sys
+import os
+
+# Add parent directory to path for imports if needed
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import requests
 import json
-import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load environment variables from parent directory
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+load_dotenv(env_path)
 
 API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:5000')
 
