@@ -6,6 +6,7 @@ from typing import Optional, Dict, List
 import json
 from collections import Counter
 from src.database.db_connection import DatabaseConnection
+from src.utils.picklist_loader import get_picklist_loader
 
 
 class IntakeClassificationAgent:
@@ -13,69 +14,25 @@ class IntakeClassificationAgent:
     
     def __init__(self, db_connection: DatabaseConnection):
         self.db_connection = db_connection
+        self.picklist_loader = get_picklist_loader()
         self.reference_data = self._load_reference_data()
     
     def _load_reference_data(self) -> Dict:
         """
-        Load reference data for classification fields
+        Load reference data for classification fields from picklist CSV
         This maps numeric IDs to human-readable labels
         """
-        # These are typical IT support ticket classification values
-        # You may need to adjust these based on your actual data
-        return {
-            "issuetype": {
-                "1": "Incident",
-                "2": "Request",
-                "3": "Problem",
-                "4": "Change",
-                "11": "Incident"
-            },
-            "subissuetype": {
-                "1": "General",
-                "2": "Hardware",
-                "3": "Software",
-                "4": "Network",
-                "5": "Email",
-                "6": "Security",
-                "11": "General"
-            },
-            "ticketcategory": {
-                "1": "Hardware",
-                "2": "Software",
-                "3": "Network",
-                "4": "Email/Communication",
-                "5": "Security",
-                "6": "Software/SaaS",
-                "7": "Hardware",
-                "8": "Network",
-                "9": "Email",
-                "10": "Security",
-                "11": "Not Mentioned",
-                "3": "Not Mentioned"
-            },
-            "tickettype": {
-                "1": "Service Request",
-                "2": "Incident",
-                "3": "Problem",
-                "4": "Change Request",
-                "5": "Task",
-                "11": "Service Request"
-            },
-            "priority": {
-                "1": "Critical",
-                "2": "High",
-                "3": "Medium",
-                "4": "Low",
-                "5": "Low"
-            },
-            "status": {
-                "1": "New",
-                "2": "In Progress",
-                "3": "Resolved",
-                "4": "Closed",
-                "5": "Open"
-            }
-        }
+        reference_data = {}
+        
+        # Load data from picklist for all relevant fields
+        classification_fields = ["issuetype", "subissuetype", "ticketcategory", "tickettype", "priority", "status"]
+        
+        for field in classification_fields:
+            field_data = self.picklist_loader.get_all_values_for_field(field)
+            if field_data:
+                reference_data[field] = field_data
+        
+        return reference_data
     
     def extract_metadata(self, title: str, description: str, model: str = 'llama3-8b') -> Optional[Dict]:
         """
@@ -141,7 +98,7 @@ class IntakeClassificationAgent:
         print("-"*80)
         print("📤 Sending prompt to LLM for metadata extraction...")
         
-        extracted_data = self.db_connection.call_cortex_llm(prompt, model=model)
+        extracted_data = self.db_connection.call_cortex_llm(prompt, model=model, json_response=True)
         
         if extracted_data:
             extracted_data["STATUS"] = "Open"
@@ -199,7 +156,9 @@ class IntakeClassificationAgent:
         
         summary_str = "\nMost common classification values among similar tickets:\n"
         for field, info in summary.items():
-            label = self.reference_data.get(field.lower(), {}).get(str(info["Value"]), "Unknown")
+            label = self.picklist_loader.get_label(field.lower(), str(info["Value"]))
+            if label is None:
+                label = "Unknown"
             summary_str += f"{field}: {info['Value']} (Label: {label}, appeared {info['Count']} times)\n"
         
         classification_prompt = f"""
@@ -297,11 +256,8 @@ class IntakeClassificationAgent:
         
         classification_fields = ["issuetype", "subissuetype", "ticketcategory", "tickettype", "priority", "status"]
         for field_name in classification_fields:
-            if field_name in self.reference_data:
-                options_str = ", ".join([f'"{val}": "{label}"' for val, label in self.reference_data[field_name].items()])
-                classification_prompt += f"  {field_name.upper()}: {{{options_str}}}\n"
-            else:
-                classification_prompt += f"  {field_name.upper()}: No specific options provided.\n"
+            formatted_options = self.picklist_loader.format_for_prompt(field_name)
+            classification_prompt += f"  {formatted_options}\n"
         
         classification_prompt += """
 **CLASSIFICATION INSTRUCTIONS:**
@@ -353,7 +309,9 @@ JSON Schema:
         if similar_tickets:
             print("🔍 Similar Tickets Summary:")
             for field, info in summary.items():
-                label = self.reference_data.get(field.lower(), {}).get(str(info["Value"]), "Unknown")
+                label = self.picklist_loader.get_label(field.lower(), str(info["Value"]))
+                if label is None:
+                    label = "Unknown"
                 print(f"   - {field}: {info['Value']} ({label}) - appeared {info['Count']} times")
         else:
             print("⚠️  No similar tickets found")
@@ -362,7 +320,7 @@ JSON Schema:
         print("📤 Sending classification prompt to LLM...")
         print(f"📋 Prompt length: {len(classification_prompt)} characters")
         
-        classified_data = self.db_connection.call_cortex_llm(classification_prompt, model=model)
+        classified_data = self.db_connection.call_cortex_llm(classification_prompt, model=model, json_response=True)
         
         # Handle case where LLM returns None
         if not classified_data:
@@ -371,6 +329,8 @@ JSON Schema:
             print("🔄 Using fallback classification method")
         else:
             print("✅ Classification successful!")
+            # Normalize classification results
+            classified_data = self._normalize_classification(classified_data)
         
         print("-"*80)
         print("📊 Classification Results:")
@@ -386,6 +346,92 @@ JSON Schema:
         
         return classified_data
     
+    def _normalize_classification(self, classification: Dict) -> Dict:
+        """
+        Normalize classification results to ensure values are valid and properly formatted
+        
+        This handles cases where:
+        - LLM returns labels instead of values
+        - LLM returns invalid values
+        - Values need to be converted to proper format
+        
+        Args:
+            classification: Classification dictionary from LLM
+        
+        Returns:
+            Normalized classification dictionary
+        """
+        normalized = {}
+        field_mapping = {
+            "ISSUETYPE": "issuetype",
+            "SUBISSUETYPE": "subissuetype",
+            "TICKETCATEGORY": "ticketcategory",
+            "TICKETTYPE": "tickettype",
+            "PRIORITY": "priority",
+            "STATUS": "status"
+        }
+        
+        for field_upper, field_lower in field_mapping.items():
+            if field_upper not in classification:
+                continue
+            
+            value = classification[field_upper]
+            
+            # Handle dict format {Value: ..., Label: ...}
+            if isinstance(value, dict):
+                raw_value = value.get('Value') or value.get('value')
+                raw_label = value.get('Label') or value.get('label')
+                
+                # Try to normalize the value
+                normalized_value = self.picklist_loader.normalize_value(field_lower, str(raw_value) if raw_value else "")
+                
+                # If value normalization failed, try label
+                if normalized_value is None and raw_label:
+                    normalized_value = self.picklist_loader.get_value(field_lower, str(raw_label))
+                
+                # If we have a normalized value, get the label
+                if normalized_value:
+                    normalized_label = self.picklist_loader.get_label(field_lower, normalized_value)
+                    normalized[field_upper] = {
+                        "Value": normalized_value,
+                        "Label": normalized_label or raw_label or "Unknown"
+                    }
+                else:
+                    # Keep original if normalization fails
+                    normalized[field_upper] = value
+            
+            # Handle string format (could be value or label)
+            elif isinstance(value, str):
+                normalized_value = self.picklist_loader.normalize_value(field_lower, value)
+                
+                if normalized_value:
+                    normalized_label = self.picklist_loader.get_label(field_lower, normalized_value)
+                    normalized[field_upper] = {
+                        "Value": normalized_value,
+                        "Label": normalized_label or value
+                    }
+                else:
+                    # If normalization fails, try to use as-is (might be a valid value not in picklist)
+                    normalized[field_upper] = {
+                        "Value": value,
+                        "Label": self.picklist_loader.get_label(field_lower, value) or value
+                    }
+            
+            # Handle numeric format
+            elif isinstance(value, (int, float)):
+                normalized_value = str(value)
+                normalized_label = self.picklist_loader.get_label(field_lower, normalized_value)
+                normalized[field_upper] = {
+                    "Value": normalized_value,
+                    "Label": normalized_label or str(value)
+                }
+            
+            # Keep other types as-is
+            else:
+                normalized[field_upper] = value
+        
+        return normalized
+    
     def _intelligent_fallback_classification(self, new_ticket_data: Dict, 
                                             extracted_metadata: Dict, 
                                             summary: Dict) -> Dict:
@@ -397,58 +443,103 @@ JSON Schema:
         description = new_ticket_data.get('description', '').lower()
         combined_text = f"{title} {description}".lower()
         
-        # Determine category based on keywords
+        # Determine category based on keywords - use picklist values
+        category_value = None
+        category_label = None
+        
         if any(word in combined_text for word in ['email', 'outlook', 'exchange', 'mail']):
-            category = {"Value": "4", "Label": "Email/Communication"}
+            # Try to find Email-related category in picklist
+            category_value = self.picklist_loader.get_value("ticketcategory", "Email")
+            if not category_value:
+                category_value = "3"  # Fallback
         elif any(word in combined_text for word in ['network', 'wifi', 'internet', 'connection', 'vpn']):
-            category = {"Value": "3", "Label": "Network"}
+            category_value = self.picklist_loader.get_value("ticketcategory", "Network")
+            if not category_value:
+                category_value = "3"  # Fallback
         elif any(word in combined_text for word in ['printer', 'computer', 'laptop', 'hardware', 'device']):
-            category = {"Value": "1", "Label": "Hardware"}
+            category_value = self.picklist_loader.get_value("ticketcategory", "Hardware")
+            if not category_value:
+                category_value = "1"  # Fallback
         elif any(word in combined_text for word in ['software', 'application', 'app', 'teams', 'office']):
-            category = {"Value": "6", "Label": "Software/SaaS"}
+            category_value = self.picklist_loader.get_value("ticketcategory", "Software")
+            if not category_value:
+                category_value = "2"  # Fallback
         elif any(word in combined_text for word in ['password', 'security', 'access', 'login']):
-            category = {"Value": "5", "Label": "Security"}
-        else:
-            category = {"Value": "3", "Label": "Not Mentioned"}
+            category_value = self.picklist_loader.get_value("ticketcategory", "Security")
+            if not category_value:
+                category_value = "5"  # Fallback
         
-        # Determine issue type
+        if category_value:
+            category_label = self.picklist_loader.get_label("ticketcategory", category_value)
+        else:
+            category_value = "3"
+            category_label = self.picklist_loader.get_label("ticketcategory", category_value) or "Standard"
+        
+        category = {"Value": str(category_value), "Label": category_label or "Unknown"}
+        
+        # Determine issue type - use picklist values
+        issue_type_value = None
         if any(word in combined_text for word in ['broken', 'not working', 'error', 'failed', 'issue', 'problem']):
-            issue_type = {"Value": "1", "Label": "Incident"}
+            issue_type_value = self.picklist_loader.get_value("issuetype", "Incident")
         elif any(word in combined_text for word in ['request', 'need', 'want', 'please', 'can you']):
-            issue_type = {"Value": "2", "Label": "Request"}
-        else:
-            issue_type = {"Value": "1", "Label": "Incident"}  # Default to Incident
+            issue_type_value = self.picklist_loader.get_value("issuetype", "Request")
         
-        # Use urgency from metadata if available
+        if not issue_type_value:
+            issue_type_value = "2"  # Default to Incident (value 2 in picklist)
+        
+        issue_type_label = self.picklist_loader.get_label("issuetype", issue_type_value) or "Incident"
+        issue_type = {"Value": str(issue_type_value), "Label": issue_type_label}
+        
+        # Use urgency from metadata if available - use picklist values
         urgency = extracted_metadata.get('urgency_level', 'Medium').lower()
+        priority_value = None
+        
         if urgency == 'critical':
-            priority = {"Value": "1", "Label": "Critical"}
+            priority_value = self.picklist_loader.get_value("priority", "Critical")
         elif urgency == 'high':
-            priority = {"Value": "2", "Label": "High"}
+            priority_value = self.picklist_loader.get_value("priority", "High")
         elif urgency == 'low':
-            priority = {"Value": "4", "Label": "Low"}
+            priority_value = self.picklist_loader.get_value("priority", "Low")
         else:
-            priority = {"Value": "3", "Label": "Medium"}
+            priority_value = self.picklist_loader.get_value("priority", "Medium")
+        
+        if not priority_value:
+            priority_value = "2"  # Default to Medium
+        
+        priority_label = self.picklist_loader.get_label("priority", priority_value) or "Medium"
+        priority = {"Value": str(priority_value), "Label": priority_label}
         
         # Use summary for other fields if available
         subissuetype_info = summary.get("SUBISSUETYPE")
         if subissuetype_info and isinstance(subissuetype_info, dict):
-            subissuetype = {"Value": str(subissuetype_info.get("Value", "1")), "Label": "General"}
+            subissuetype_value = str(subissuetype_info.get("Value", "25"))  # Default to "Other"
         else:
-            subissuetype = {"Value": "1", "Label": "General"}
+            subissuetype_value = "25"  # Default to "Other" in picklist
+        
+        subissuetype_label = self.picklist_loader.get_label("subissuetype", subissuetype_value) or "Other"
+        subissuetype = {"Value": subissuetype_value, "Label": subissuetype_label}
         
         tickettype_info = summary.get("TICKETTYPE")
         if tickettype_info and isinstance(tickettype_info, dict):
-            tickettype = {"Value": str(tickettype_info.get("Value", "1")), "Label": "Service Request"}
+            tickettype_value = str(tickettype_info.get("Value", "1"))  # Default to "Service Request"
         else:
-            tickettype = {"Value": "1", "Label": "Service Request"}
+            tickettype_value = "1"  # Default to "Service Request"
+        
+        tickettype_label = self.picklist_loader.get_label("tickettype", tickettype_value) or "Service Request"
+        tickettype = {"Value": tickettype_value, "Label": tickettype_label}
+        
+        # Status - use picklist values
+        status_value = self.picklist_loader.get_value("status", "New")
+        if not status_value:
+            status_value = "1"  # Default to "New"
+        status_label = self.picklist_loader.get_label("status", status_value) or "New"
         
         return {
             "ISSUETYPE": issue_type,
             "SUBISSUETYPE": subissuetype,
             "TICKETCATEGORY": category,
             "TICKETTYPE": tickettype,
-            "STATUS": {"Value": "5", "Label": "Open"},
+            "STATUS": {"Value": str(status_value), "Label": status_label},
             "PRIORITY": priority
         }
 

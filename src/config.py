@@ -17,6 +17,8 @@ class Config:
     DB_NAME = os.getenv('DB_NAME', 'tickets_db')
     DB_USER = os.getenv('DB_USER', 'admin')
     DB_PASSWORD = os.getenv('DB_PASSWORD', '')  # Must be set in .env file
+    # Optional: Public host for remote connections (defaults to DB_HOST if not set)
+    DB_PUBLIC_HOST = os.getenv('DB_PUBLIC_HOST', DB_HOST)
     
     # GROQ API configuration
     GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
@@ -38,11 +40,26 @@ class Config:
     SIMILARITY_THRESHOLD = 0.3
     SEMANTIC_SEARCH_BATCH_SIZE = 500
     
+    # Email Configuration
+    SUPPORT_EMAIL = os.getenv('SUPPORT_EMAIL', '')
+    SUPPORT_EMAIL_APP_PASSWORD = os.getenv('SUPPORT_EMAIL_APP_PASSWORD', '')
+    SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    SMTP_PORT = int(os.getenv('SMTP_PORT', 465))
+    
     @classmethod
-    def get_db_config(cls):
-        """Get database configuration as dictionary"""
+    def get_db_config(cls, use_public_host: bool = False):
+        """
+        Get database configuration as dictionary
+        
+        Args:
+            use_public_host: If True, use DB_PUBLIC_HOST instead of DB_HOST (default: False)
+        
+        Returns:
+            Dictionary with database connection parameters
+        """
+        host = cls.DB_PUBLIC_HOST if use_public_host else cls.DB_HOST
         return {
-            'host': cls.DB_HOST,
+            'host': host,
             'port': cls.DB_PORT,
             'database': cls.DB_NAME,
             'user': cls.DB_USER,

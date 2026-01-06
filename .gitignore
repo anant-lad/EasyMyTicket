@@ -49,4 +49,19 @@ Thumbs.db
 # Project specific
 dataset/*.csv
 !dataset/ticket_data_updated.csv
+*.ipynb
+.agent/
+.gemini/
+
+# Sensitive data
+.env
+.env.local
+oauth_cilent/
+postgres/
+tests/test_logs.txt
+
+# oauth client
+oauth_cilent/
+
+# postgres
 

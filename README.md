@@ -4,17 +4,21 @@ An intelligent ticket classification system that uses LLM (GROQ) to extract meta
 
 ## Features
 
-- **Ticket Creation API**: Create tickets with automatic metadata extraction and classification
-- **Intake Classification Agent**: Uses LLM to extract metadata and classify tickets
-- **Semantic Similarity Search**: Finds similar historical tickets using embeddings for better classification
-- **PostgreSQL Integration**: Stores tickets in PostgreSQL database
-- **FastAPI Backend**: Modern, fast, and automatically documented API
-- **Database Exploration API**: Browse and explore database tables and data
-- **Modular Architecture**: Clean, organized codebase with separation of concerns
+- **Smart Ticket Assignment**: Automatically assigns tickets based on technician skills, workload, and availability.
+- **Resolution Generation Agent**: Generates technical, step-by-step resolution guides based on historical patterns.
+- **Ticket Notification Agent**: Automatically emails technicians and users about ticket updates.
+- **Semantic Similarity Search**: Multi-table search across new, closed, and resolved tickets using embeddings.
+- **Technician Management**: API routes for status updates (Google OAuth supported) and workload tracking.
+- **FastAPI Backend**: Modern, fast, and automatically documented API.
+- **Database Exploration**: Built-in tools to browse and analyze ticket data.
 
-## Workflow
+## System Architecture
 
-workflow.png
+### Technical Architecture
+![Technical Architecture](technical_architecture.png)
+
+### Workflow Overview
+![Architecture Overview](architecture_overview.png)
 
 ## Prerequisites
 
@@ -42,12 +46,16 @@ pip install -r requirements.txt
    Then edit `.env` and set your actual values:
 
    ```bash
-   GROQ_API_KEY=your_groq_api_key_here
-   DB_HOST=localhost
-   DB_PORT=5433
-   DB_NAME=tickets_db
-   DB_USER=USER
-   DB_PASSWORD=PASSWORD
+    GROQ_API_KEY=your_groq_api_key_here
+    DB_HOST=localhost
+    DB_PORT=5433
+    DB_NAME=tickets_db
+    DB_USER=admin
+    DB_PASSWORD=your_secure_password_here
+    
+    # Email Support (for Notification Agent)
+    SUPPORT_EMAIL=your-support-email@gmail.com
+    SUPPORT_EMAIL_APP_PASSWORD=your-app-password
    ```
 
    **Security Notes:**
@@ -76,6 +84,87 @@ docker run --name Autotask \
 
 **Note:** The `DB_PASSWORD` must be set in your `.env` file. The script will automatically load it.
 ```
+
+### Connecting to a Remote Database (For Team Members)
+
+If you want to connect to an existing remote database instead of setting up your own local database:
+
+1. **Skip Database Setup**: Do NOT run `./start_database.sh` or create a local Docker container.
+
+2. **Update `.env` File**: Set `DB_HOST` to the remote database's public IP address:
+
+   ```bash
+   GROQ_API_KEY=your_groq_api_key_here
+   DB_HOST=42.104.220.111          # ← Remote database public IP
+   DB_PORT=5433
+   DB_NAME=tickets_db
+   DB_USER=admin
+   DB_PASSWORD=Admin@EMT.2828      # ← Password provided by database administrator
+   ```
+
+3. **Get Connection Details**: Contact the database administrator for:
+   - Public IP address or domain name
+   - Database password
+   - Port number (usually `5433`)
+
+4. **Test Connection**: Verify you can connect to the remote database:
+   ```bash
+   python -c "from src.database.db_connection import DatabaseConnection; db = DatabaseConnection(); print('✓ Connected successfully!')"
+   ```
+
+5. **Run the Application**: Start the application normally:
+   ```bash
+   python main.py
+   ```
+
+**Important Notes:**
+- You still need your own `GROQ_API_KEY` in the `.env` file
+- The database administrator must have configured port forwarding and firewall rules
+- Make sure you have internet connectivity to reach the remote database
+- See `DATABASE_ACCESS.md` for troubleshooting connection issues
+
+### Enabling Public Database Access (For Database Administrators)
+
+The database is configured to accept remote connections. To enable public access:
+
+1. **Configure Router Port Forwarding**:
+   - Access your router's admin panel (usually `192.168.1.1` or `192.168.0.1`)
+   - Navigate to "Port Forwarding" or "Virtual Server" settings
+   - Add a rule to forward external port `5433` to your server's local IP on port `5433` (TCP protocol)
+   - Save and apply changes
+
+2. **Configure Firewall**:
+   ```bash
+   # Linux (ufw)
+   sudo ufw allow 5433/tcp
+   
+   # Linux (iptables)
+   sudo iptables -A INPUT -p tcp --dport 5433 -j ACCEPT
+   ```
+
+3. **Find Your Public IP**:
+   ```bash
+   curl ifconfig.me
+   ```
+
+4. **Share Connection Details**:
+   - Host: Your public IP address
+   - Port: `5433`
+   - Database: `tickets_db`
+   - User: `admin`
+   - Password: Value from your `.env` file (`DB_PASSWORD`)
+
+5. **Optional: Set Public Host in Config**:
+   Add to your `.env` file if you want the application to use a different host for connections:
+   ```bash
+   DB_PUBLIC_HOST=your-public-ip-or-domain
+   ```
+
+**Security Notes:**
+- The database accepts connections from any IP address with password authentication
+- Use strong passwords and only share credentials with authorized users
+- For production, consider restricting access to specific IP ranges in `postgres/pg_hba.conf`
+- See `DATABASE_ACCESS.md` for detailed connection instructions and troubleshooting
 
 4. **Initialize Database Tables**:
 
@@ -213,12 +302,17 @@ GET /api/tickets?status=Open&priority=High&order_by=createdate&order_direction=D
 Retrieves ticket details by ticket number.
 
 ### 4. Health Check
-
 **GET** `/api/health`
 
-Checks the health status of the API and database connection.
+### 5. Technician Status Update
+**PATCH** `/api/database/technicians/{tech_id}/status`
+Body: `{"status": "available"}`
 
-### 5. Database Management
+### 6. Resolution Steps
+**GET** `/api/tickets/{ticket_number}/resolution`
+Retrieves generated resolution guide.
+
+### 7. Database Management
 
 #### Start Database
 
@@ -282,6 +376,10 @@ EasyMyTicket/
 ├── dataset/                     # Data files
 │   └── ticket_data_updated.csv # Historical ticket data
 ├── start_database.sh           # Database startup script
+├── postgres/                   # PostgreSQL configuration files
+│   ├── postgresql.conf        # PostgreSQL server configuration
+│   └── pg_hba.conf            # Host-based authentication configuration
+├── DATABASE_ACCESS.md         # Public database access guide
 ├── workflow.png                # Workflow diagram
 ├── requirements.txt            # Python dependencies
 └── README.md                   # This file
@@ -302,25 +400,15 @@ EasyMyTicket/
    - Provides GROQ LLM integration
    - Implements semantic similarity search using embeddings
 3. **IntakeClassificationAgent** (`src/agents/intake_classification.py`):
-
-   - Extracts metadata from tickets using LLM
-   - Classifies tickets based on content and similar tickets
-   - Provides fallback classification when LLM fails
-4. **Ticket Routes** (`routes/ticket_routes.py`):
-
-   - FastAPI REST API endpoints for ticket operations
-   - Pydantic models for request/response validation
-   - Orchestrates the intake classification workflow
-5. **Database Routes** (`routes/database_routes.py`):
-
-   - Database management endpoints
-   - Table exploration and data browsing
-   - Database status monitoring
-6. **FastAPI Application** (`main.py`):
-
-   - Main application setup with CORS middleware
-   - Automatic API documentation generation
-   - ASGI server (uvicorn) for high performance
+   - Metadata extraction and classification.
+4. **SmartAssignmentAgent** (`src/agents/smart_ticket_assignment.py`):
+   - Logic for matching technician skills and workload.
+5. **ResolutionGenerationAgent** (`src/agents/resolution_generation.py`):
+   - AI-driven resolution guides based on history.
+6. **NotificationAgent** (`src/agents/notification_agent.py`):
+   - Email notifications for users and technicians.
+7. **FastAPI Application** (`main.py`):
+   - REST API orchestrator.
 
 ## Workflow
 

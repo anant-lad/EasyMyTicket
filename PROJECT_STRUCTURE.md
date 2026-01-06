@@ -19,9 +19,15 @@ EasyMyTicket/
 │   │   ├── __init__.py
 │   │   ├── db_connection.py       # Database connection and operations
 │   │   └── create_tables.sql      # Database schema definitions
-│   └── agents/                     # AI agents
 │       ├── __init__.py
-│       └── intake_classification.py  # Ticket classification agent
+│       ├── intake_classification.py  # Classification agent
+│       ├── smart_ticket_assignment.py # Technician matching logic
+│       ├── resolution_generation.py  # Resolution AI agent
+│       └── notification_agent.py     # Email notification agent
+├── src/utils/
+│       ├── picklist_loader.py        # Picklist/CSV utility
+│       ├── email_sender.py           # SMTP mailer
+│       └── oauth_manager.py          # Google OAuth logic
 ├── scripts/                         # Utility scripts
 │   ├── README.md                   # Scripts documentation
 │   ├── init_database.py            # Initialize database tables
@@ -56,11 +62,16 @@ EasyMyTicket/
 - Database query execution
 - Automatic table creation
 
-### `src/agents/intake_classification.py`
-- Metadata extraction from tickets
-- Ticket classification using LLM
-- Fallback classification logic
-- Reference data management
+### `src/agents/`
+- **IntakeClassificationAgent**: Metadata extraction and classification.
+- **SmartAssignmentAgent**: Skill-based matching and workload balancing.
+- **ResolutionGenerationAgent**: Historical resolution analysis.
+- **NotificationAgent**: Automated email responses.
+
+### `src/utils/`
+- **EmailSender**: Handles SMTP communications.
+- **OAuthManager**: Manages Google OAuth client secrets.
+- **PicklistLoader**: Normalizes ticket fields from CSV.
 
 ### `routes/ticket_routes.py`
 - Ticket creation endpoint

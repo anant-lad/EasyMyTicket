@@ -1,4 +1,3 @@
 """
-Test suite for Ticket Intake Classification System
+Ticket Intake Classification System Test Suite
 """
-

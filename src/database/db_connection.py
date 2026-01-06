@@ -78,43 +78,53 @@ class DatabaseConnection:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(query, params)
-                if fetch:
-                    results = cur.fetchall()
-                    return [dict(row) for row in results]
+                
+                # Commit for all operations (DML/DDL). 
+                # For SELECT, commit just ends the transaction block.
                 conn.commit()
+                
+                if fetch:
+                    # Check if there are results to fetch (to avoid "no results to fetch" error)
+                    if cur.description:
+                        results = cur.fetchall()
+                        return [dict(row) for row in results]
                 return None
         except Exception as e:
             conn.rollback()
             print(f"Error executing query: {e}")
             raise
     
-    def call_cortex_llm(self, prompt: str, model: str = 'llama3-8b-8192') -> Optional[Dict]:
+    def call_cortex_llm(self, prompt: str, model: str = 'llama3-8b-8192', json_response: bool = True) -> Any:
         """
-        Call GROQ LLM API and parse JSON response
+        Call GROQ LLM API and parse response
         
         Args:
             prompt: The prompt to send to the LLM
             model: The model to use (default: llama3-8b-8192)
+            json_response: Whether to enforce and parse JSON response (default: True)
         
         Returns:
-            Parsed JSON response as dict or None if failed
+            Parsed JSON as dict if json_response=True, else raw string
         """
         try:
-            # Use appropriate model based on input
-            # GROQ available models: llama-3.1-8b-instant, llama-3.3-70b-versatile, gemma2-9b-it
-            # Note: llama-3.1-70b-versatile and mixtral-8x7b-32768 have been decommissioned
+            # Clean prompt
+            prompt = prompt.strip()
+            
+            # Determine model name
             if '70b' in model.lower() or 'versatile' in model.lower():
-                model_name = 'llama-3.3-70b-versatile'  # More capable model for complex tasks
+                model_name = 'llama-3.3-70b-versatile'
             elif 'mixtral' in model.lower():
-                # Mixtral is deprecated, use llama-3.3-70b-versatile instead
                 model_name = 'llama-3.3-70b-versatile'
             elif 'llama3' in model.lower() or 'llama' in model.lower() or '8b' in model.lower():
-                model_name = 'llama-3.1-8b-instant'  # Fast model for simple tasks
+                model_name = 'llama-3.1-8b-instant'
             else:
-                model_name = 'llama-3.1-8b-instant'  # Default to fast model
+                model_name = 'llama-3.1-8b-instant'
             
-            # Add JSON format instruction to prompt
-            json_prompt = prompt + "\n\nIMPORTANT: Respond ONLY with valid JSON. Do not include any text before or after the JSON."
+            # Add JSON format instruction if requested
+            if json_response:
+                json_prompt = prompt + "\n\nIMPORTANT: Respond ONLY with valid JSON. Do not include any explanatory text before or after the JSON."
+            else:
+                json_prompt = prompt
             
             print(f"🤖 Calling GROQ API with model: {model_name}")
             print(f"📏 Prompt length: {len(json_prompt)} characters")
@@ -128,7 +138,7 @@ class DatabaseConnection:
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are a helpful assistant that responds with valid JSON only. Always return properly formatted JSON without any markdown formatting or code blocks."
+                            "content": "You are a helpful IT support assistant." + (" Respond with valid JSON only." if json_response else "")
                         },
                         {
                             "role": "user",
@@ -151,7 +161,7 @@ class DatabaseConnection:
                             messages=[
                                 {
                                     "role": "system",
-                                    "content": "You are a helpful assistant that responds with valid JSON only. Always return properly formatted JSON without any markdown formatting or code blocks."
+                                    "content": "You are a helpful IT support assistant." + (" Respond with valid JSON only." if json_response else "")
                                 },
                                 {
                                     "role": "user",
@@ -169,7 +179,9 @@ class DatabaseConnection:
             
             content = response.choices[0].message.content.strip()
             print(f"📥 Raw response received ({len(content)} characters)")
-            print(f"📋 Response preview: {content[:200]}{'...' if len(content) > 200 else ''}")
+            
+            if not json_response:
+                return content
             
             # Remove markdown code blocks if present
             original_content = content
@@ -247,20 +259,34 @@ class DatabaseConnection:
             query_embedding = model.encode([search_text])[0]
             
             # Fetch a batch of tickets from database for comparison
-            batch_size = min(Config.SEMANTIC_SEARCH_BATCH_SIZE, limit * 10)
+            batch_size = Config.SEMANTIC_SEARCH_BATCH_SIZE
             
             query = f"""
-                SELECT 
+                (SELECT 
                     ticketnumber, title, description, issuetype, subissuetype,
                     ticketcategory, tickettype, priority, status, createdate,
-                    resolveddatetime, resolution
+                    resolveddatetime, resolution, 'closed' as source_table
                 FROM closed_tickets
-                WHERE title IS NOT NULL AND description IS NOT NULL
+                WHERE title IS NOT NULL OR description IS NOT NULL)
+                UNION ALL
+                (SELECT 
+                    ticketnumber, title, description, issuetype, subissuetype,
+                    ticketcategory, tickettype, priority, status, createdate,
+                    resolveddatetime, resolution, 'resolved' as source_table
+                FROM resolved_tickets
+                WHERE title IS NOT NULL OR description IS NOT NULL)
+                UNION ALL
+                (SELECT 
+                    ticketnumber, title, description, issuetype, subissuetype,
+                    ticketcategory, tickettype, priority, status, createdate,
+                    resolveddatetime, resolution, 'new' as source_table
+                FROM new_tickets
+                WHERE title IS NOT NULL OR description IS NOT NULL)
                 ORDER BY createdate DESC
                 LIMIT %s
             """
             
-            print(f"   📊 Fetching {batch_size} recent tickets for comparison...")
+            print(f"   📊 Fetching up to {batch_size} tickets from all tables for comparison...")
             candidate_tickets = self.execute_query(query, (batch_size,))
             
             if not candidate_tickets:
@@ -310,21 +336,8 @@ class DatabaseConnection:
                 
                 return filtered_results[:limit]
             else:
-                print(f"   ⚠️  No tickets found with similarity >= 0.3, returning top {limit} most recent")
-                # Fallback: return most recent tickets if no good matches
-                fallback_query = """
-                    SELECT 
-                        ticketnumber, title, description, issuetype, subissuetype,
-                        ticketcategory, tickettype, priority, status, createdate,
-                        resolveddatetime, resolution
-                    FROM closed_tickets
-                    ORDER BY createdate DESC
-                    LIMIT %s
-                """
-                results = self.execute_query(fallback_query, (limit,))
-                if results:
-                    print(f"   ✅ Found {len(results)} recent tickets (fallback)")
-                return results or []
+                print(f"   ⚠️  No tickets found with similarity >= {Config.SIMILARITY_THRESHOLD}, using most recent")
+                return results[:limit]
             
         except Exception as e:
             print(f"   ❌ Error finding similar tickets: {e}")
@@ -333,16 +346,10 @@ class DatabaseConnection:
             # Fallback to simple query on error
             try:
                 fallback_query = """
-                    SELECT 
-                        ticketnumber, title, description, issuetype, subissuetype,
-                        ticketcategory, tickettype, priority, status, createdate,
-                        resolveddatetime, resolution
-                    FROM closed_tickets
-                    ORDER BY createdate DESC
-                    LIMIT %s
+                    SELECT ticketnumber, title, description, resolution, 'closed' as source_table
+                    FROM closed_tickets ORDER BY createdate DESC LIMIT %s
                 """
-                results = self.execute_query(fallback_query, (limit,))
-                return results or []
+                return self.execute_query(fallback_query, (limit,)) or []
             except:
                 return []
     
@@ -519,6 +526,9 @@ class DatabaseConnection:
                         self._create_closed_tickets_table(conn)
                     else:
                         print("✓ Database tables exist")
+                    
+                    # Check and add missing columns (migrations)
+                    self._ensure_columns_exist(conn)
         except Exception as e:
             print(f"Error checking tables: {e}")
             # Try to create tables anyway
@@ -526,6 +536,33 @@ class DatabaseConnection:
                 self._create_tables(conn)
             except Exception as create_error:
                 print(f"Error creating tables: {create_error}")
+    
+    def _ensure_columns_exist(self, conn):
+        """Ensure all required columns exist in tables (migrations)"""
+        try:
+            with conn.cursor() as cur:
+                # Check if user_id column exists in new_tickets table
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'new_tickets' 
+                        AND column_name = 'user_id'
+                    );
+                """)
+                user_id_exists = cur.fetchone()[0]
+                
+                if not user_id_exists:
+                    print("user_id column not found in new_tickets table. Adding it...")
+                    cur.execute("""
+                        ALTER TABLE new_tickets 
+                        ADD COLUMN user_id VARCHAR(100);
+                    """)
+                    conn.commit()
+                    print("✓ user_id column added to new_tickets table")
+        except Exception as e:
+            print(f"Error ensuring columns exist: {e}")
+            conn.rollback()
     
     def _create_tables(self, conn):
         """Create all required database tables"""

@@ -6,7 +6,9 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
+from src.utils.database_restart import restart_and_fix_database
 import subprocess
+import os
 
 router = APIRouter()
 
@@ -54,6 +56,85 @@ class TableDataResponse(BaseModel):
     returned_rows: int
     columns: List[str]
     data: List[Dict[str, Any]]
+
+
+class TechnicianCreate(BaseModel):
+    """Model for creating a technician"""
+    tech_id: str
+    tech_name: str
+    tech_mail: str
+    tech_password: Optional[str] = None
+    skills: Optional[str] = None
+
+
+class UserCreate(BaseModel):
+    """Model for creating a user"""
+    user_id: str
+    user_name: str
+    user_mail: str
+    user_password: Optional[str] = None
+
+
+class GenericResponse(BaseModel):
+    """Generic success/failure response"""
+    success: bool
+    message: str
+
+
+class TechnicianStatusUpdate(BaseModel):
+    """Model for updating technician status"""
+    status: str  # available, on_leave, half_day, wfh, offline, out_of_office, away
+
+
+class OAuthClientUpload(BaseModel):
+    """Model for uploading OAuth client secret"""
+    tech_id: str
+    tech_mail: str
+    client_secret_json: Dict[str, Any]
+
+
+@router.post("/database/restart", response_model=DatabaseStatusResponse)
+async def restart_database():
+    """
+    Restart the PostgreSQL database container and fix password if needed
+    
+    This route:
+    1. Restarts the Docker container (stops and starts it)
+    2. Attempts to update the password to match .env file if there's a mismatch
+    3. Tests the database connection
+    """
+    try:
+        success, message = restart_and_fix_database()
+        
+        if success:
+            # Test database connection
+            db_conn = get_db_connection()
+            conn = db_conn.get_connection()
+            
+            # Test with a simple query
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            
+            return DatabaseStatusResponse(
+                status="success",
+                message=f"Database restarted successfully. {message}",
+                connected=True
+            )
+        else:
+            return DatabaseStatusResponse(
+                status="error",
+                message=message,
+                connected=False,
+                error=message
+            )
+    except Exception as e:
+        return DatabaseStatusResponse(
+            status="error",
+            message=f"Error restarting database: {str(e)}",
+            connected=False,
+            error=str(e)
+        )
 
 
 @router.post("/database/start", response_model=DatabaseStatusResponse)
@@ -398,3 +479,313 @@ async def get_database_status():
             error=str(e)
         )
 
+
+@router.get("/database/technicians", response_model=Dict[str, Any])
+async def get_technicians(
+    available: Optional[bool] = Query(None, description="Filter by availability"),
+    skills: Optional[str] = Query(None, description="Search in skills (partial match)"),
+    min_solved: Optional[int] = Query(None, description="Minimum solved tickets"),
+    max_workload: Optional[int] = Query(None, description="Maximum current workload"),
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get technicians with detailed filtering
+    """
+    try:
+        db_conn = get_db_connection()
+        params = []
+        where_clauses = []
+        
+        if available is not None:
+            where_clauses.append("available = %s")
+            params.append(available)
+            
+        if skills:
+            where_clauses.append("skills ILIKE %s")
+            params.append(f"%{skills}%")
+            
+        if min_solved is not None:
+            where_clauses.append("solved_tickets >= %s")
+            params.append(min_solved)
+            
+        if max_workload is not None:
+            where_clauses.append("current_workload <= %s")
+            params.append(max_workload)
+            
+        where_str = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+        
+        # Count query
+        count_query = f"SELECT COUNT(*) as count FROM technician_data{where_str}"
+        total_count = db_conn.execute_query(count_query, tuple(params))[0]['count']
+        
+        # Data query
+        data_query = f"""
+            SELECT * FROM technician_data 
+            {where_str} 
+            ORDER BY tech_id ASC 
+            LIMIT %s OFFSET %s
+        """
+        data_params = params + [limit, offset]
+        technicians = db_conn.execute_query(data_query, tuple(data_params))
+        
+        return {
+            "success": True,
+            "total": total_count,
+            "returned": len(technicians),
+            "data": technicians
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving technicians: {str(e)}"
+        )
+
+
+@router.get("/database/users", response_model=Dict[str, Any])
+async def get_users(
+    available: Optional[bool] = Query(None, description="Filter by availability"),
+    min_raised: Optional[int] = Query(None, description="Minimum tickets raised"),
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get users with detailed filtering
+    """
+    try:
+        db_conn = get_db_connection()
+        params = []
+        where_clauses = []
+        
+        if available is not None:
+            where_clauses.append("available = %s")
+            params.append(available)
+            
+        if min_raised is not None:
+            where_clauses.append("no_tickets_raised >= %s")
+            params.append(min_raised)
+            
+        where_str = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+        
+        # Count query
+        count_query = f"SELECT COUNT(*) as count FROM user_data{where_str}"
+        total_count = db_conn.execute_query(count_query, tuple(params))[0]['count']
+        
+        # Data query
+        data_query = f"""
+            SELECT * FROM user_data 
+            {where_str} 
+            ORDER BY user_id ASC 
+            LIMIT %s OFFSET %s
+        """
+        data_params = params + [limit, offset]
+        users = db_conn.execute_query(data_query, tuple(data_params))
+        
+        return {
+            "success": True,
+            "total": total_count,
+            "returned": len(users),
+            "data": users
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving users: {str(e)}"
+        )
+
+
+@router.post("/database/technicians", response_model=GenericResponse)
+async def add_technicians(technicians: List[TechnicianCreate]):
+    """
+    Add multiple technicians to the database
+    """
+    try:
+        db_conn = get_db_connection()
+        count = 0
+        
+        for tech in technicians:
+            query = """
+                INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (tech_id) DO UPDATE SET
+                    tech_name = EXCLUDED.tech_name,
+                    tech_mail = EXCLUDED.tech_mail,
+                    tech_password = EXCLUDED.tech_password,
+                    skills = EXCLUDED.skills;
+            """
+            db_conn.execute_query(query, (
+                tech.tech_id, 
+                tech.tech_name, 
+                tech.tech_mail, 
+                tech.tech_password, 
+                tech.skills
+            ), fetch=False)
+            count += 1
+            
+        return GenericResponse(
+            success=True,
+            message=f"Successfully items inserted/updated: {count} technicians"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error adding technicians: {str(e)}"
+        )
+
+
+@router.post("/database/users", response_model=GenericResponse)
+async def add_users(users: List[UserCreate]):
+    """
+    Add multiple users to the database
+    """
+    try:
+        db_conn = get_db_connection()
+        count = 0
+        
+        for user in users:
+            query = """
+                INSERT INTO user_data (user_id, user_name, user_mail, user_password)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    user_name = EXCLUDED.user_name,
+                    user_mail = EXCLUDED.user_mail,
+                    user_password = EXCLUDED.user_password;
+            """
+            db_conn.execute_query(query, (
+                user.user_id, 
+                user.user_name, 
+                user.user_mail, 
+                user.user_password
+            ), fetch=False)
+            count += 1
+            
+        return GenericResponse(
+            success=True,
+            message=f"Successfully items inserted/updated: {count} users"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error adding users: {str(e)}"
+        )
+
+
+@router.delete("/database/tables/{table_name}/clear", response_model=GenericResponse)
+async def clear_table(table_name: str = Path(..., description="Name of the table to clear")):
+    """
+    Clear all data from a specific table
+    """
+    try:
+        db_conn = get_db_connection()
+        
+        # Verify table exists to prevent SQL injection
+        check_query = "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)"
+        exists = db_conn.execute_query(check_query, (table_name,))[0]['exists']
+        
+        if not exists:
+            raise HTTPException(status_code=404, detail=f"Table {table_name} not found")
+            
+        # Clear table
+        clear_query = f'TRUNCATE TABLE "{table_name}" CASCADE'
+        db_conn.execute_query(clear_query, fetch=False)
+        
+        return GenericResponse(
+            success=True,
+            message=f"Table {table_name} cleared successfully"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing table: {str(e)}"
+        )
+
+@router.patch("/database/technicians/{tech_id}/status", response_model=GenericResponse)
+async def update_technician_status(
+    tech_id: str = Path(..., description="The technician ID"),
+    status_update: TechnicianStatusUpdate = None
+):
+    """
+    Update technician status (e.g., 'available', 'on_leave', 'wfh')
+    """
+    try:
+        db_conn = get_db_connection()
+        
+        # Validate status
+        valid_statuses = ['available', 'on_leave', 'half_day', 'wfh', 'offline', 'out_of_office', 'away']
+        new_status = status_update.status.lower().replace(" ", "_")
+        
+        if new_status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            )
+            
+        query = "UPDATE technician_data SET status = %s WHERE tech_id = %s"
+        db_conn.execute_query(query, (new_status, tech_id), fetch=False)
+        
+        return GenericResponse(
+            success=True,
+            message=f"Status for technician {tech_id} updated to {new_status}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating status: {str(e)}"
+        )
+
+
+@router.post("/database/technicians/{tech_id}/oauth-client", response_model=GenericResponse)
+async def upload_oauth_client(
+    tech_id: str = Path(..., description="The technician ID"),
+    upload_data: OAuthClientUpload = None
+):
+    """
+    Upload OAuth client secret for a technician
+    """
+    try:
+        from src.utils.oauth_manager import OAuthManager
+        
+        # Save the client secret file
+        file_path = OAuthManager.save_client_secret(
+            upload_data.tech_mail, 
+            upload_data.client_secret_json
+        )
+        
+        return GenericResponse(
+            success=True,
+            message=f"OAuth client secret saved for {upload_data.tech_mail} at {os.path.basename(file_path)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving OAuth client secret: {str(e)}"
+        )
+
+
+@router.get("/database/tickets/{ticket_number}/assignments", response_model=List[Dict[str, Any]])
+async def get_ticket_assignments(
+    ticket_number: str = Path(..., description="The ticket number")
+):
+    """
+    Get assignment history for a specific ticket
+    """
+    try:
+        from src.agents.smart_ticket_assignment import SmartAssignmentAgent
+        agent = SmartAssignmentAgent(get_db_connection())
+        history = agent.get_assignment_history(ticket_number)
+        
+        # Convert datetime objects
+        from datetime import datetime
+        for row in history:
+            for key, value in row.items():
+                if isinstance(value, datetime):
+                    row[key] = value.isoformat()
+                    
+        return history
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving assignment history: {str(e)}"
+        )

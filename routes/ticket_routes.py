@@ -7,13 +7,20 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from src.database.db_connection import DatabaseConnection
 from src.agents.intake_classification import IntakeClassificationAgent
+from src.agents.resolution_generation import ResolutionGenerationAgent
+from src.agents.smart_ticket_assignment import SmartAssignmentAgent
+from src.agents.notification_agent import NotificationAgent
 from src.config import Config
+from src.utils.picklist_loader import get_picklist_loader
 
 router = APIRouter()
 
-# Lazy loading for database connection and agent
+# Lazy loading for database connection and agents
 _db_conn = None
 _intake_agent = None
+_resolution_agent = None
+_assignment_agent = None
+_notification_agent = None
 
 def get_db_connection():
     """Get or create database connection (lazy loading)"""
@@ -28,6 +35,27 @@ def get_intake_agent():
     if _intake_agent is None:
         _intake_agent = IntakeClassificationAgent(get_db_connection())
     return _intake_agent
+
+def get_resolution_agent():
+    """Get or create resolution generation agent (lazy loading)"""
+    global _resolution_agent
+    if _resolution_agent is None:
+        _resolution_agent = ResolutionGenerationAgent(get_db_connection())
+    return _resolution_agent
+
+def get_assignment_agent():
+    """Get or create smart assignment agent (lazy loading)"""
+    global _assignment_agent
+    if _assignment_agent is None:
+        _assignment_agent = SmartAssignmentAgent(get_db_connection())
+    return _assignment_agent
+
+def get_notification_agent():
+    """Get or create notification agent (lazy loading)"""
+    global _notification_agent
+    if _notification_agent is None:
+        _notification_agent = NotificationAgent()
+    return _notification_agent
 
 
 
@@ -62,12 +90,23 @@ class TicketResponse(BaseModel):
     extracted_metadata: Dict[str, Any]
     classification: Dict[str, Any]
     similar_tickets_found: int
+    resolution: Optional[str] = None
+    assigned_tech_id: Optional[str] = None
 
 
 class TicketDetailResponse(BaseModel):
     """Response model for ticket details"""
     success: bool
     ticket: Dict[str, Any]
+    ticket_with_labels: Optional[Dict[str, Any]] = None  # Ticket with human-readable labels
+
+
+class ResolutionResponse(BaseModel):
+    """Response model for ticket resolution"""
+    success: bool
+    ticket_number: str
+    resolution: Optional[str] = None
+    ticket_title: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -88,23 +127,34 @@ class TicketsListResponse(BaseModel):
     has_more: bool
 
 
+class GenericResponse(BaseModel):
+    """Generic success/failure response"""
+    success: bool
+    message: str
+
+
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
 async def create_ticket(ticket_request: TicketCreateRequest):
     """
-    Create a new ticket and process through intake classification
+    Create a new ticket and process through agentic workflow
     
     This endpoint:
     1. Extracts metadata from the ticket using LLM
     2. Finds similar historical tickets
     3. Classifies the ticket based on content and similar tickets
-    4. Stores the ticket in the database
+    4. Generates resolution steps based on similar tickets
+    5. Stores the ticket in the database
     
     Returns:
-        TicketResponse with ticket details, metadata, and classification
+        TicketResponse with ticket details, metadata, classification, and resolution
     """
     try:
+        # Generate ticket number immediately
+        ticket_number = f"T{datetime.now().strftime('%Y%m%d')}.{datetime.now().strftime('%H%M%S')}"
+        
         # Prepare ticket data
         ticket_data: Dict[str, Any] = {
+            'ticketnumber': ticket_number,
             'title': ticket_request.title,
             'description': ticket_request.description,
             'user_id': ticket_request.user_id,
@@ -187,41 +237,90 @@ async def create_ticket(ticket_request: TicketCreateRequest):
                 detail='Failed to classify ticket'
             )
         
-        # Step 4: Merge classification data into ticket_data
-        # Extract values from classification (handle both dict with Value/Label and direct values)
-        if isinstance(classification.get('ISSUETYPE'), dict):
-            ticket_data['issuetype'] = classification['ISSUETYPE'].get('Value')
-        else:
-            ticket_data['issuetype'] = classification.get('ISSUETYPE')
+        # Step 4: Merge classification data into ticket_data with normalization
+        # Extract values from classification and normalize using picklist
+        picklist_loader = get_picklist_loader()
         
-        if isinstance(classification.get('SUBISSUETYPE'), dict):
-            ticket_data['subissuetype'] = classification['SUBISSUETYPE'].get('Value')
-        else:
-            ticket_data['subissuetype'] = classification.get('SUBISSUETYPE')
+        # Helper function to normalize and extract value
+        def normalize_field(field_key: str, db_field: str, default_value: str = None):
+            value = classification.get(field_key)
+            if isinstance(value, dict):
+                raw_value = value.get('Value') or value.get('value')
+            else:
+                raw_value = value
+            
+            if raw_value:
+                # Normalize the value using picklist
+                normalized = picklist_loader.normalize_value(db_field, str(raw_value))
+                if normalized:
+                    ticket_data[db_field] = normalized
+                else:
+                    # If normalization fails, use raw value as fallback
+                    ticket_data[db_field] = str(raw_value)
+            elif default_value:
+                ticket_data[db_field] = default_value
         
-        if isinstance(classification.get('TICKETCATEGORY'), dict):
-            ticket_data['ticketcategory'] = classification['TICKETCATEGORY'].get('Value')
-        else:
-            ticket_data['ticketcategory'] = classification.get('TICKETCATEGORY')
+        # Normalize and set each field
+        normalize_field('ISSUETYPE', 'issuetype')
+        normalize_field('SUBISSUETYPE', 'subissuetype')
+        normalize_field('TICKETCATEGORY', 'ticketcategory')
+        normalize_field('TICKETTYPE', 'tickettype')
+        normalize_field('PRIORITY', 'priority')
+        normalize_field('STATUS', 'status', '1')  # Default to "New" status (value 1)
         
-        if isinstance(classification.get('TICKETTYPE'), dict):
-            ticket_data['tickettype'] = classification['TICKETTYPE'].get('Value')
-        else:
-            ticket_data['tickettype'] = classification.get('TICKETTYPE')
-        
-        if isinstance(classification.get('PRIORITY'), dict):
-            ticket_data['priority'] = classification['PRIORITY'].get('Value')
-        else:
-            ticket_data['priority'] = classification.get('PRIORITY')
-        
-        if isinstance(classification.get('STATUS'), dict):
-            ticket_data['status'] = classification['STATUS'].get('Value')
-        else:
-            ticket_data['status'] = classification.get('STATUS', 'Open')
-        
-        # Step 5: Insert ticket into database
+
+        # If status wasn't set, use default
+        if 'status' not in ticket_data or not ticket_data['status']:
+            status_value = picklist_loader.get_value('status', 'New')
+            ticket_data['status'] = status_value or '1'
+
+        # Step 5: Generate resolution steps
+        print("\nStep 5: Generating resolution steps...")
+        resolution_agent = get_resolution_agent()
+        generated_resolution = None
+
+        try:
+            generated_resolution = resolution_agent.generate_resolution(
+                ticket_data=ticket_data,
+                extracted_metadata=extracted_metadata,
+                similar_tickets=similar_tickets,
+                model=Config.CLASSIFICATION_MODEL  # Use same model for consistency
+            )
+
+            if generated_resolution:
+                ticket_data['resolution'] = generated_resolution
+                print(f"✅ Resolution generated and added to ticket data")
+            else:
+                print("⚠️  Resolution generation returned None, continuing without resolution")
+        except Exception as e:
+            print(f"⚠️  Error generating resolution: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Continue without resolution - don't fail the ticket creation
+
+        # Step 6: Smart Ticket Assignment
+        print("\nStep 6: Assigning technician...")
+        assignment_agent = get_assignment_agent()
+        assigned_tech_id = None
+
+        try:
+            assigned_tech_id = assignment_agent.assign_ticket(
+                ticket_data=ticket_data,
+                classification=classification
+            )
+
+            if assigned_tech_id:
+                ticket_data['assigned_tech_id'] = assigned_tech_id
+                print(f"✅ Ticket assigned to: {assigned_tech_id}")
+            else:
+                print("⚠️  No suitable technician found for assignment")
+        except Exception as e:
+            print(f"⚠️  Error in assignment agent: {str(e)}")
+            # Continue even if assignment fails
+
+        # Step 7: Insert ticket into database
         print("\n" + "="*80)
-        print("💾 Step 4: Inserting ticket into database...")
+        print("💾 Step 7: Inserting ticket into database...")
         print("="*80)
         print(f"📊 Ticket data to insert:")
         print(f"   - Title: {ticket_data['title']}")
@@ -246,6 +345,33 @@ async def create_ticket(ticket_request: TicketCreateRequest):
         print("✅ TICKET CREATION COMPLETED SUCCESSFULLY")
         print("="*80 + "\n")
         
+        # Step 8: Send Notifications
+        try:
+            notification_agent = get_notification_agent()
+            
+            # Fetch User Details
+            user_query = "SELECT user_name, user_mail FROM user_data WHERE user_id = %s"
+            user_results = db_conn.execute_query(user_query, (ticket_data['user_id'],))
+            user_data = user_results[0] if user_results else {'user_name': 'User', 'user_mail': None}
+            
+            # Fetch Technician Details (if assigned)
+            tech_data = None
+            if assigned_tech_id:
+                tech_query = "SELECT tech_name, tech_mail FROM technician_data WHERE tech_id = %s"
+                tech_results = db_conn.execute_query(tech_query, (assigned_tech_id,))
+                if tech_results:
+                    tech_data = tech_results[0]
+                    # Notify Technician
+                    notification_agent.notify_technician(ticket_data, tech_data)
+            
+            # Notify User
+            if user_data.get('user_mail'):
+                notification_agent.notify_user(ticket_data, user_data, tech_data)
+                
+        except Exception as e:
+            print(f"⚠️ Notification failed: {e}")
+            # Don't fail the whole request if notifications fail
+        
         # Prepare response
         response = TicketResponse(
             success=True,
@@ -259,7 +385,9 @@ async def create_ticket(ticket_request: TicketCreateRequest):
             },
             extracted_metadata=extracted_metadata,
             classification=classification,
-            similar_tickets_found=len(similar_tickets)
+            similar_tickets_found=len(similar_tickets),
+            resolution=generated_resolution,
+            assigned_tech_id=assigned_tech_id
         )
         
         return response
@@ -350,13 +478,13 @@ async def get_all_tickets(
 @router.get("/tickets/{ticket_number}", response_model=TicketDetailResponse)
 async def get_ticket(ticket_number: str = Path(..., description="The ticket number to retrieve")):
     """
-    Get ticket details by ticket number
+    Get complete ticket details by ticket number with full information including labels
     
     Args:
         ticket_number: The ticket number to retrieve
     
     Returns:
-        TicketDetailResponse with ticket details
+        TicketDetailResponse with complete ticket details including human-readable labels
     """
     try:
         db_conn = get_db_connection()
@@ -373,20 +501,99 @@ async def get_ticket(ticket_number: str = Path(..., description="The ticket numb
             )
         
         # Convert datetime objects to strings for JSON serialization
-        ticket = results[0]
+        ticket = dict(results[0])
+        ticket_with_labels = ticket.copy()
+        
+        # Convert datetime objects to strings
         for key, value in ticket.items():
             if isinstance(value, datetime):
                 ticket[key] = value.isoformat()
+                ticket_with_labels[key] = value.isoformat()
+        
+        # Add human-readable labels using picklist
+        picklist_loader = get_picklist_loader()
+        label_fields = {
+            'issuetype': 'issuetype',
+            'subissuetype': 'subissuetype',
+            'ticketcategory': 'ticketcategory',
+            'tickettype': 'tickettype',
+            'priority': 'priority',
+            'status': 'status',
+            'source': 'source',
+            'queueid': 'queueid',
+            'creatortype': 'creatortype',
+            'lastactivitypersontype': 'lastactivitypersontype',
+            'servicelevelagreementid': 'servicelevelagreementid'
+        }
+        
+        for field, picklist_field in label_fields.items():
+            if field in ticket and ticket[field]:
+                value = str(ticket[field])
+                label = picklist_loader.get_label(picklist_field, value)
+                if label:
+                    ticket_with_labels[f'{field}_label'] = label
         
         return TicketDetailResponse(
             success=True,
-            ticket=ticket
+            ticket=ticket,
+            ticket_with_labels=ticket_with_labels
         )
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error retrieving ticket: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f'Internal server error: {str(e)}'
+        )
+
+
+@router.get("/tickets/{ticket_number}/resolution", response_model=ResolutionResponse)
+async def get_ticket_resolution(ticket_number: str = Path(..., description="The ticket number to get resolution for")):
+    """
+    Get resolution steps for a specific ticket
+    
+    Args:
+        ticket_number: The ticket number to get resolution for
+    
+    Returns:
+        ResolutionResponse with resolution steps
+    """
+    try:
+        db_conn = get_db_connection()
+        query = """
+            SELECT ticketnumber, title, resolution
+            FROM new_tickets
+            WHERE ticketnumber = %s
+        """
+        results = db_conn.execute_query(query, (ticket_number,))
+        
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail='Ticket not found'
+            )
+        
+        ticket = results[0]
+        resolution = ticket.get('resolution')
+        title = ticket.get('title')
+        
+        return ResolutionResponse(
+            success=True,
+            ticket_number=ticket_number,
+            resolution=resolution,
+            ticket_title=title
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error retrieving ticket resolution: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f'Internal server error: {str(e)}'
@@ -422,4 +629,52 @@ async def health_check():
             status='unhealthy',
             database=db_status,
             service=f'groq: {groq_status}'
+        )
+
+
+@router.patch("/tickets/{ticket_number}/resolve", response_model=GenericResponse)
+async def resolve_ticket(
+    ticket_number: str = Path(..., description="The ticket number to resolve")
+):
+    """
+    Resolve a ticket and decrement technician workload
+    """
+    try:
+        db_conn = get_db_connection()
+        
+        # 1. Get ticket details to find assigned technician
+        query = "SELECT assigned_tech_id, status FROM new_tickets WHERE ticketnumber = %s"
+        results = db_conn.execute_query(query, (ticket_number,))
+        
+        if not results:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+            
+        ticket = results[0]
+        tech_id = ticket.get('assigned_tech_id')
+        
+        # 2. Update ticket status to 'Closed' (or whatever value represents closed)
+        # Using status label 'Closed' and assuming it has a value
+        picklist_loader = get_picklist_loader()
+        closed_status = picklist_loader.get_value('status', 'Closed') or '3' # Fallback to 3 if unknown
+        
+        update_query = "UPDATE new_tickets SET status = %s, resolveddatetime = NOW() WHERE ticketnumber = %s"
+        db_conn.execute_query(update_query, (closed_status, ticket_number), fetch=False)
+        
+        # 3. Decrement workload if a technician was assigned
+        if tech_id:
+            assignment_agent = get_assignment_agent()
+            assignment_agent.decrement_workload(tech_id)
+            
+            # Record unassignment in history
+            history_query = "UPDATE ticket_assignments SET unassigned_at = NOW(), assignment_status = 'resolved' WHERE ticket_number = %s AND tech_id = %s AND assignment_status = 'assigned'"
+            db_conn.execute_query(history_query, (ticket_number, tech_id), fetch=False)
+            
+        return GenericResponse(
+            success=True,
+            message=f"Ticket {ticket_number} resolved successfully. Technician workload updated."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error resolving ticket: {str(e)}"
         )
