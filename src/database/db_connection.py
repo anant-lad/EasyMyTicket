@@ -5,6 +5,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from typing import Optional, List, Dict, Any
 from groq import Groq
+import os
 import json
 import re
 import numpy as np
@@ -491,6 +492,27 @@ class DatabaseConnection:
             print(f"Error getting tickets: {e}")
             raise
     
+    def get_ticket_by_number(self, ticket_number: str) -> Optional[Dict]:
+        """
+        Get ticket details by ticket number searching across all tables
+        
+        Args:
+            ticket_number: The ticket number to retrieve
+        
+        Returns:
+            Dictionary with ticket details or None if not found
+        """
+        query = """
+            SELECT ticketnumber, title, description, status, issuetype, resolution, 'new' as source_table FROM new_tickets WHERE ticketnumber = %s
+            UNION ALL
+            SELECT ticketnumber, title, description, status, issuetype, resolution, 'resolved' as source_table FROM resolved_tickets WHERE ticketnumber = %s
+            UNION ALL
+            SELECT ticketnumber, title, description, status, issuetype, resolution, 'closed' as source_table FROM closed_tickets WHERE ticketnumber = %s
+        """
+        params = (ticket_number, ticket_number, ticket_number)
+        results = self.execute_query(query, params)
+        return results[0] if results else None
+
     def _ensure_tables_exist(self):
         """Ensure all required tables exist, create them if they don't"""
         conn = self.get_connection()
@@ -525,7 +547,21 @@ class DatabaseConnection:
                         print("closed_tickets table not found. Creating it...")
                         self._create_closed_tickets_table(conn)
                     else:
-                        print("✓ Database tables exist")
+                        # Check if chat_sessions table exists
+                        cur.execute("""
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.tables 
+                                WHERE table_schema = 'public' 
+                                AND table_name = 'chat_sessions'
+                            );
+                        """)
+                        chat_table_exists = cur.fetchone()[0]
+                        
+                        if not chat_table_exists:
+                            print("chat history tables not found. Creating them...")
+                            self._create_tables(conn)
+                        else:
+                            print("✓ Database tables exist")
                     
                     # Check and add missing columns (migrations)
                     self._ensure_columns_exist(conn)
@@ -720,4 +756,35 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
         """Close database connection"""
         if self.conn and not self.conn.closed:
             self.conn.close()
+
+    def create_chat_session(self, ticket_number: str) -> Optional[str]:
+        """Create a new chat session for a ticket"""
+        query = "INSERT INTO chat_sessions (ticket_number) VALUES (%s) RETURNING session_id"
+        result = self.execute_query(query, (ticket_number,))
+        return str(result[0]['session_id']) if result else None
+
+    def save_chat_message(self, session_id: str, role: str, content: str):
+        """Save a chat message to history"""
+        query = "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)"
+        self.execute_query(query, (session_id, role, content), fetch=False)
+
+    def get_chat_history(self, session_id: str, limit: int = 10) -> List[Dict]:
+        """Retrieve chat history for a session"""
+        query = """
+            SELECT role, content, timestamp 
+            FROM chat_messages 
+            WHERE session_id = %s 
+            ORDER BY timestamp ASC 
+            LIMIT %s
+        """
+        results = self.execute_query(query, (session_id, limit))
+        return results if results else []
+
+    def get_session_by_ticket(self, ticket_number: str) -> Optional[str]:
+        """Get the latest session ID for a ticket"""
+        query = "SELECT session_id FROM chat_sessions WHERE ticket_number = %s ORDER BY created_at DESC LIMIT 1"
+        result = self.execute_query(query, (ticket_number,))
+        if result:
+            return str(result[0]['session_id'])
+        return None
 

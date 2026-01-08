@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routes.ticket_routes import router as ticket_router
 from routes.database_routes import router as database_router
+from routes.technician_routes import router as technician_router
 from src.config import Config
 from src.utils.database_startup import ensure_database_running, wait_for_database_ready
 from src.utils.database_restart import restart_and_fix_database
@@ -27,6 +28,7 @@ app.add_middleware(
 # Include routers
 app.include_router(ticket_router, prefix="/api", tags=["tickets"])
 app.include_router(database_router, prefix="/api", tags=["database"])
+app.include_router(technician_router, prefix="/api", tags=["technician"])
 
 
 @app.on_event("startup")
@@ -47,13 +49,20 @@ async def startup_event():
         success, message = ensure_database_running()
         
         if success:
-            print(message)
-            # Wait for database to be ready
-            print("⏳ Waiting for database to be ready...")
-            if wait_for_database_ready():
-                print("✓ Database is ready and accepting connections")
+            if message == "remote":
+                print(f"✓ Using remote database at {Config.DB_HOST}")
             else:
-                print("⚠ Database container is running but not ready yet. It may take a few more seconds.")
+                print(message)
+                
+            # Wait for database to be ready
+            print(f"⏳ Waiting for database ({Config.DB_HOST}) to be ready...")
+            if wait_for_database_ready():
+                print(f"✓ Database at {Config.DB_HOST} is ready and accepting connections")
+            else:
+                if message == "remote":
+                    print(f"⚠ Could not connect to remote database at {Config.DB_HOST}. Please verify connection and credentials.")
+                else:
+                    print("⚠ Database container is running but not ready yet. It may take a few more seconds.")
         else:
             print(f"❌ {message}")
             print("\n" + "="*80)

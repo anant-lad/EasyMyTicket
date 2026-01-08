@@ -9,6 +9,12 @@ from typing import Tuple, Optional
 from src.config import Config
 
 
+def is_local_db() -> bool:
+    """Check if the database host is a local address"""
+    local_hosts = ["localhost", "127.0.0.1", "0.0.0.0"]
+    return Config.DB_HOST in local_hosts
+
+
 def check_docker_available() -> bool:
     """Check if Docker is available"""
     try:
@@ -205,9 +211,14 @@ def verify_database_credentials() -> Tuple[bool, str]:
 
 def ensure_database_running(container_name: str = "Autotask") -> Tuple[bool, str]:
     """
-    Ensure the database container is running
+    Ensure the database container is running or a remote DB is accessible
     Returns (success, message)
     """
+    # Check if we are using a remote database
+    if not is_local_db():
+        print(f"🌐 Remote database configured at {Config.DB_HOST}")
+        return True, "remote"
+    
     # Check if Docker is available
     if not check_docker_available():
         return False, "Docker is not available. Please install Docker and ensure it's running."

@@ -98,3 +98,19 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
     title TEXT
 );
 
+
+-- Table 6: chat_sessions
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_number VARCHAR(100) REFERENCES new_tickets(ticketnumber) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table 7: chat_messages
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL, -- 'user' or 'assistant'
+    content TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
