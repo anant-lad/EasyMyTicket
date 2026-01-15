@@ -788,3 +788,596 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
             return str(result[0]['session_id'])
         return None
 
+    # ========== Organization Management Methods ==========
+    
+    def get_next_companyid(self) -> str:
+        """
+        Generate next companyid in format 0001, 0002, etc.
+        
+        Returns:
+            Next available companyid with zero-padding
+        """
+        query = """
+            SELECT companyid FROM organizations 
+            ORDER BY CAST(companyid AS INTEGER) DESC 
+            LIMIT 1
+        """
+        result = self.execute_query(query)
+        
+        if result and result[0].get('companyid'):
+            last_id = int(result[0]['companyid'])
+            next_id = last_id + 1
+        else:
+            next_id = 1
+        
+        # Zero-pad to 4 digits
+        return str(next_id).zfill(4)
+    
+    def create_organization(self, organization_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Create a new organization with auto-generated companyid
+        
+        Args:
+            organization_data: Dictionary with company_name, company_email, contact_phone, address
+        
+        Returns:
+            companyid if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            # Generate next companyid
+            companyid = self.get_next_companyid()
+            
+            # Prepare insert query
+            query = """
+                INSERT INTO organizations (companyid, company_name, company_email, contact_phone, address)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING companyid
+            """
+            
+            params = (
+                companyid,
+                organization_data.get('company_name'),
+                organization_data.get('company_email'),
+                organization_data.get('contact_phone'),
+                organization_data.get('address')
+            )
+            
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                result_companyid = cur.fetchone()[0]
+                conn.commit()
+                return result_companyid
+                
+        except Exception as e:
+            conn.rollback()
+            print(f"Error creating organization: {e}")
+            raise
+    
+    def get_organization_by_companyid(self, companyid: str) -> Optional[Dict]:
+        """
+        Get organization details by companyid
+        
+        Args:
+            companyid: The company ID to retrieve
+        
+        Returns:
+            Dictionary with organization details or None if not found
+        """
+        query = "SELECT * FROM organizations WHERE companyid = %s"
+        results = self.execute_query(query, (companyid,))
+        return results[0] if results else None
+    
+    def get_all_organizations(self, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        """
+        Get all organizations with pagination
+        
+        Args:
+            limit: Maximum number of organizations to return
+            offset: Number of organizations to skip
+        
+        Returns:
+            Dictionary with organizations list and total count
+        """
+        conn = self.get_connection()
+        try:
+            # Get total count
+            count_query = "SELECT COUNT(*) FROM organizations"
+            with conn.cursor() as cur:
+                cur.execute(count_query)
+                total = cur.fetchone()[0]
+            
+            # Get organizations with pagination
+            query = """
+                SELECT * FROM organizations
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+            """
+            results = self.execute_query(query, (limit, offset))
+            
+            return {
+                'organizations': results or [],
+                'total': total,
+                'limit': limit,
+                'offset': offset,
+                'has_more': (offset + limit) < total
+            }
+        except Exception as e:
+            print(f"Error getting organizations: {e}")
+            raise
+    
+    # ========== Ticket Update Methods ==========
+    
+    def update_ticket_status(self, ticket_number: str, new_status: str, tech_id: Optional[str] = None) -> bool:
+        """
+        Update ticket status with automatic date field updates
+        
+        Args:
+            ticket_number: Ticket number to update
+            new_status: New status value
+            tech_id: Technician ID (optional)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        from datetime import datetime
+        conn = self.get_connection()
+        
+        try:
+            # Build update fields based on status
+            update_fields = ["status = %s"]
+            params = [new_status]
+            
+            # Auto-update date fields based on status
+            if new_status == "In Progress":
+                # Check if firstresponsedatetime is already set
+                check_query = "SELECT firstresponsedatetime FROM new_tickets WHERE ticketnumber = %s"
+                result = self.execute_query(check_query, (ticket_number,))
+                if result and not result[0].get('firstresponsedatetime'):
+                    update_fields.append("firstresponsedatetime = %s")
+                    params.append(datetime.now())
+            
+            elif new_status == "Closed":
+                update_fields.extend([
+                    "lastactivitydate = %s",
+                    "resolveddatetime = %s",
+                    "completeddate = %s"
+                ])
+                now = datetime.now()
+                params.extend([now, now, now])
+            
+            # Add ticket_number to params
+            params.append(ticket_number)
+            
+            # Build and execute update query
+            update_query = f"""
+                UPDATE new_tickets 
+                SET {', '.join(update_fields)}
+                WHERE ticketnumber = %s
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(update_query, params)
+                conn.commit()
+                
+            print(f"✅ Ticket {ticket_number} status updated to: {new_status}")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error updating ticket status: {e}")
+            raise
+    
+    def update_ticket_field(self, ticket_number: str, field: str, value: Any) -> bool:
+        """
+        Update a specific field in a ticket
+        
+        Args:
+            ticket_number: Ticket number to update
+            field: Field name to update
+            value: New value for the field
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        conn = self.get_connection()
+        
+        # Allowed fields to update (prevent SQL injection)
+        allowed_fields = [
+            'priority', 'estimatedhours', 'resolutionplandatetime', 
+            'assigned_tech_id', 'status', 'resolution'
+        ]
+        
+        if field not in allowed_fields:
+            raise ValueError(f"Field '{field}' is not allowed to be updated")
+        
+        try:
+            query = f"UPDATE new_tickets SET {field} = %s WHERE ticketnumber = %s"
+            
+            with conn.cursor() as cur:
+                cur.execute(query, (value, ticket_number))
+                conn.commit()
+                
+            print(f"✅ Ticket {ticket_number} field '{field}' updated to: {value}")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error updating ticket field: {e}")
+            raise
+    
+    # ========== Context Management Methods ==========
+    
+    def insert_ticket_context(self, context_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Insert ticket context into tickets_context table
+        
+        Args:
+            context_data: Dictionary containing context fields
+            
+        Returns:
+            Context ID if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            # Prepare columns and values
+            columns = []
+            values = []
+            
+            # Map context_data keys to database columns
+            field_mapping = {
+                'id': 'id',
+                'ticket_id': 'id',  # Support both field names
+                'ticket_number': 'ticket_number',
+                'title': 'title',
+                'description': 'description',
+                'extracted_text': 'extracted_text',
+                'image_analysis': 'image_analysis',
+                'table_data_parsed': 'table_data_parsed',
+                'entities': 'entities',
+                'context_summary': 'context_summary',
+                'file_metadata': 'file_metadata',
+                'resolved_at': 'resolved_at',
+                'resolution_category': 'resolution_category',
+                'assigned_technician_id': 'assigned_technician_id',
+                'human_feedback': 'human_feedback'
+            }
+            
+            for key, db_column in field_mapping.items():
+                if key in context_data and context_data[key] is not None:
+                    columns.append(db_column)
+                    value = context_data[key]
+                    
+                    # Convert dicts to JSON for JSONB columns
+                    if db_column in ['image_analysis', 'table_data_parsed', 'entities', 'file_metadata', 'human_feedback']:
+                        if isinstance(value, (dict, list)):
+                            import json
+                            value = json.dumps(value)
+                    
+                    values.append(value)
+            
+            if not columns:
+                print("No valid context data to insert")
+                return None
+            
+            placeholders = ', '.join(['%s'] * len(columns))
+            query = f"""
+                INSERT INTO tickets_context ({', '.join(columns)})
+                VALUES ({placeholders})
+                RETURNING context_id
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+                context_id = cur.fetchone()[0]
+                conn.commit()
+                print(f"✅ Ticket context inserted with ID: {context_id}")
+                return context_id
+                
+        except Exception as e:
+            conn.rollback()
+            print(f"Error inserting ticket context: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def get_ticket_context(self, ticket_number: str) -> Optional[Dict]:
+        """
+        Retrieve ticket context by ticket number
+        
+        Args:
+            ticket_number: Ticket number
+            
+        Returns:
+            Context dictionary or None
+        """
+        query = """
+            SELECT * FROM tickets_context
+            WHERE ticket_number = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        results = self.execute_query(query, (ticket_number,))
+        return results[0] if results else None
+    
+    def find_similar_contexts(self, ticket_context: Dict[str, Any], limit: int = 10) -> List[Dict]:
+        """
+        Find similar ticket contexts for reuse
+        Uses context summary and entities for matching
+        
+        Args:
+            ticket_context: Current ticket context
+            limit: Maximum number of similar contexts to return
+            
+        Returns:
+            List of similar context dictionaries
+        """
+        # For now, use simple text-based similarity
+        # In production, this could use embeddings or more sophisticated matching
+        
+        query = """
+            SELECT tc.*, nt.resolution
+            FROM tickets_context tc
+            JOIN new_tickets nt ON tc.id = nt.id
+            WHERE tc.resolved_at IS NOT NULL
+            AND tc.context_summary IS NOT NULL
+            ORDER BY tc.created_at DESC
+            LIMIT %s
+        """
+        
+        results = self.execute_query(query, (limit * 2,))  # Get more for filtering
+        
+        if not results:
+            return []
+        
+        # Simple keyword-based similarity (can be enhanced with embeddings)
+        current_summary = ticket_context.get('context_summary', '').lower()
+        current_entities = ticket_context.get('entities', {})
+        
+        scored_results = []
+        for result in results:
+            score = 0
+            result_summary = (result.get('context_summary') or '').lower()
+            
+            # Simple word overlap scoring
+            current_words = set(current_summary.split())
+            result_words = set(result_summary.split())
+            
+            if current_words and result_words:
+                overlap = len(current_words & result_words)
+                score = overlap / len(current_words | result_words)
+            
+            scored_results.append((score, result))
+        
+        # Sort by score and return top results
+        scored_results.sort(key=lambda x: x[0], reverse=True)
+        return [result for score, result in scored_results[:limit] if score > 0.1]
+    
+    # ========== Attachment Management Methods ==========
+    
+    def insert_attachment(self, attachment_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Insert file attachment record
+        
+        Args:
+            attachment_data: Dictionary containing attachment fields
+            
+        Returns:
+            Attachment ID if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            columns = []
+            values = []
+            
+            field_mapping = {
+                'id': 'id',
+                'ticket_id': 'id',  # Support both field names
+                'ticket_number': 'ticket_number',
+                'file_name': 'file_name',
+                'file_type': 'file_type',
+                'file_size': 'file_size',
+                'file_path': 'file_path',
+                'processed': 'processed',
+                'processing_status': 'processing_status',
+                'extracted_content': 'extracted_content',
+                'processing_error': 'processing_error'
+            }
+            
+            for key, db_column in field_mapping.items():
+                if key in attachment_data and attachment_data[key] is not None:
+                    columns.append(db_column)
+                    value = attachment_data[key]
+                    
+                    # Convert dict to JSON for extracted_content if needed
+                    if db_column == 'extracted_content' and isinstance(value, dict):
+                        import json
+                        value = json.dumps(value)
+                    
+                    values.append(value)
+            
+            if not columns:
+                print("No valid attachment data to insert")
+                return None
+            
+            placeholders = ', '.join(['%s'] * len(columns))
+            query = f"""
+                INSERT INTO ticket_attachments ({', '.join(columns)})
+                VALUES ({placeholders})
+                RETURNING attachment_id
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+                attachment_id = cur.fetchone()[0]
+                conn.commit()
+                print(f"✅ Attachment inserted with ID: {attachment_id}")
+                return attachment_id
+                
+        except Exception as e:
+            conn.rollback()
+            print(f"Error inserting attachment: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def get_attachments(self, ticket_number: str) -> List[Dict]:
+        """
+        Retrieve all attachments for a ticket
+        
+        Args:
+            ticket_number: Ticket number
+            
+        Returns:
+            List of attachment dictionaries
+        """
+        query = """
+            SELECT * FROM ticket_attachments
+            WHERE ticket_number = %s
+            ORDER BY uploaded_at ASC
+        """
+        results = self.execute_query(query, (ticket_number,))
+        return results if results else []
+    
+    def update_attachment_processing(
+        self,
+        attachment_id: int,
+        status: str,
+        extracted_content: Optional[str] = None,
+        error: Optional[str] = None
+    ) -> bool:
+        """
+        Update attachment processing status
+        
+        Args:
+            attachment_id: Attachment ID
+            status: Processing status (pending, processing, completed, failed)
+            extracted_content: Extracted content (JSON string or dict)
+            error: Error message if failed
+            
+        Returns:
+            True if successful
+        """
+        conn = self.get_connection()
+        try:
+            update_fields = ["processing_status = %s", "processed = %s"]
+            params = [status, status == 'completed']
+            
+            if extracted_content is not None:
+                update_fields.append("extracted_content = %s")
+                if isinstance(extracted_content, dict):
+                    import json
+                    extracted_content = json.dumps(extracted_content)
+                params.append(extracted_content)
+            
+            if error is not None:
+                update_fields.append("processing_error = %s")
+                params.append(error)
+            
+            params.append(attachment_id)
+            
+            query = f"""
+                UPDATE ticket_attachments
+                SET {', '.join(update_fields)}
+                WHERE attachment_id = %s
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                conn.commit()
+            
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error updating attachment processing: {e}")
+            raise
+    
+    # ========== Feedback Management Methods ==========
+    
+    def insert_feedback(self, feedback_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Insert human feedback for RLHF
+        
+        Args:
+            feedback_data: Dictionary containing feedback fields
+            
+        Returns:
+            Feedback ID if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            columns = []
+            values = []
+            
+            field_mapping = {
+                'id': 'id',
+                'ticket_id': 'id',  # Support both field names
+                'ticket_number': 'ticket_number',
+                'feedback_type': 'feedback_type',
+                'is_correct': 'is_correct',
+                'rating': 'rating',
+                'correction_data': 'correction_data',
+                'comments': 'comments',
+                'technician_id': 'technician_id'
+            }
+            
+            for key, db_column in field_mapping.items():
+                if key in feedback_data and feedback_data[key] is not None:
+                    columns.append(db_column)
+                    value = feedback_data[key]
+                    
+                    # Convert dict to JSON for correction_data
+                    if db_column == 'correction_data' and isinstance(value, dict):
+                        import json
+                        value = json.dumps(value)
+                    
+                    values.append(value)
+            
+            if not columns:
+                print("No valid feedback data to insert")
+                return None
+            
+            placeholders = ', '.join(['%s'] * len(columns))
+            query = f"""
+                INSERT INTO feedback_data ({', '.join(columns)})
+                VALUES ({placeholders})
+                RETURNING feedback_id
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+                feedback_id = cur.fetchone()[0]
+                conn.commit()
+                print(f"✅ Feedback inserted with ID: {feedback_id}")
+                return feedback_id
+                
+        except Exception as e:
+            conn.rollback()
+            print(f"Error inserting feedback: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def get_feedback_for_training(self, limit: int = 1000) -> List[Dict]:
+        """
+        Retrieve feedback data for model training
+        
+        Args:
+            limit: Maximum number of feedback records to retrieve
+            
+        Returns:
+            List of feedback dictionaries
+        """
+        query = """
+            SELECT fd.*, tc.context_summary, tc.entities, nt.title, nt.description
+            FROM feedback_data fd
+            JOIN tickets_context tc ON fd.id = tc.id
+            JOIN new_tickets nt ON fd.id = nt.id
+            ORDER BY fd.created_at DESC
+            LIMIT %s
+        """
+        results = self.execute_query(query, (limit,))
+        return results if results else []
+
+

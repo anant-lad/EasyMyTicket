@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS technician_data (
     no_tickets_assigned INTEGER DEFAULT 0,
     solved_tickets INTEGER DEFAULT 0,
     current_workload INTEGER DEFAULT 0,
-    available BOOLEAN DEFAULT TRUE
+    available BOOLEAN DEFAULT TRUE,
+    availability VARCHAR(50) DEFAULT 'available'
 );
 
 -- Table 4: user_data
@@ -114,3 +115,29 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Table 8: organizations (master table for company/organization data)
+-- Tickets reference this via existing companyid field
+CREATE TABLE IF NOT EXISTS organizations (
+    id SERIAL PRIMARY KEY,
+    companyid VARCHAR(10) UNIQUE NOT NULL,
+    company_name VARCHAR(255) NOT NULL,
+    company_email VARCHAR(255),
+    contact_phone VARCHAR(50),
+    address TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table 9: ticket_assignments (for tracking ticket assignment history)
+CREATE TABLE IF NOT EXISTS ticket_assignments (
+    id SERIAL PRIMARY KEY,
+    ticket_number VARCHAR(100) REFERENCES new_tickets(ticketnumber) ON DELETE CASCADE,
+    tech_id VARCHAR(100) REFERENCES technician_data(tech_id),
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    unassigned_at TIMESTAMP,
+    assignment_status VARCHAR(50) DEFAULT 'assigned'
+);
+
+-- Add assigned_tech_id column to new_tickets if not exists
+ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS assigned_tech_id VARCHAR(100);

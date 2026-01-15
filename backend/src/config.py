@@ -46,6 +46,22 @@ class Config:
     SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     SMTP_PORT = int(os.getenv('SMTP_PORT', 465))
     
+    # File Upload Settings
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+    ALLOWED_FILE_TYPES = ['pdf', 'docx', 'doc', 'txt', 'xml', 'html', 'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff']
+    UPLOAD_DIRECTORY = os.getenv('UPLOAD_DIRECTORY', './uploads')
+    STORAGE_BACKEND = os.getenv('STORAGE_BACKEND', 'local')  # local, s3, azure, gcs
+    
+    # Context Processing
+    ENABLE_IMAGE_OCR = os.getenv('ENABLE_IMAGE_OCR', 'true').lower() == 'true'
+    OCR_ENGINE = os.getenv('OCR_ENGINE', 'pytesseract')  # pytesseract, easyocr
+    CONTEXT_EMBEDDING_MODEL = os.getenv('CONTEXT_EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+    
+    # Transfer Learning
+    ENABLE_FEEDBACK_COLLECTION = os.getenv('ENABLE_FEEDBACK_COLLECTION', 'true').lower() == 'true'
+    FINE_TUNING_PROVIDER = os.getenv('FINE_TUNING_PROVIDER', 'groq')  # groq, openai
+    MIN_FEEDBACK_FOR_TRAINING = int(os.getenv('MIN_FEEDBACK_FOR_TRAINING', '100'))
+    
     @classmethod
     def get_db_config(cls, use_public_host: bool = False):
         """

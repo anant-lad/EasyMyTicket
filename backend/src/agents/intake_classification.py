@@ -280,11 +280,28 @@ class IntakeClassificationAgent:
 
    - If user is requesting something → ISSUETYPE: "Request"
 
-4. **USE AVAILABLE OPTIONS**: Select from the provided classification options that best match your analysis.
+4. **EVALUATE PRIORITY**: 
+   - The user provided an initial priority assessment
+   - Evaluate whether this priority is appropriate based on:
+     * Business impact (how many users affected, critical systems down)
+     * Urgency (time sensitivity, deadlines)
+     * Severity (data loss, security issues, complete outage vs minor inconvenience)
+   - If the user's priority seems incorrect, adjust it and provide justification
+   - Priority guidelines:
+     * Critical/High: System down, multiple users affected, business-critical, security issues
+     * Medium: Single user affected, workarounds available, non-critical functions
+     * Low: Minor issues, cosmetic problems, feature requests
 
-5. **HISTORICAL CONTEXT**: Use similar tickets only as secondary reference, not as the primary decision factor.
+5. **USE AVAILABLE OPTIONS**: Select from the provided classification options that best match your analysis.
+
+6. **HISTORICAL CONTEXT**: Use similar tickets only as secondary reference, not as the primary decision factor.
 
 **OUTPUT FORMAT**: Provide classification in JSON format with both Value (numerical ID) and Label from the available options.
+
+For PRIORITY field, include additional fields to show evaluation:
+- "user_provided": The priority the user initially provided (if any)
+- "llm_evaluated": The priority you determined is correct
+- "justification": Brief explanation if you changed the priority
 
 JSON Schema:
 
@@ -294,9 +311,16 @@ JSON Schema:
     "TICKETCATEGORY": { "Value": "numerical_id", "Label": "Descriptive Label" },
     "TICKETTYPE": { "Value": "numerical_id", "Label": "Descriptive Label" },
     "STATUS": { "Value": "numerical_id", "Label": "Descriptive Label" },
-    "PRIORITY": { "Value": "numerical_id", "Label": "Descriptive Label" }
+    "PRIORITY": { 
+        "Value": "numerical_id", 
+        "Label": "Descriptive Label",
+        "user_provided": "User's initial priority or null",
+        "llm_evaluated": "Your evaluated priority label",
+        "justification": "Explanation if priority was changed, or 'Priority assessment is correct' if unchanged"
+    }
 }
         """
+
         
         print("\n" + "="*80)
         print("🏷️  TICKET CLASSIFICATION - Starting")

@@ -228,7 +228,7 @@ Stores technician profiles.
 - `tech_id` (PRIMARY KEY)
 - `tech_role`: e.g., Senior, Junior, Support.
 - `technical_skills`: Comma-separated or list of matched skills.
-- `status`: availability (available, on_leave, away, etc.)
+- `availability`: Current availability (available, on_leave, away, etc.)
 - `current_workload`: Number of active tickets.
 - `solved_tickets`: Total resolved tickets.
 

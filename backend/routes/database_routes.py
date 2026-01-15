@@ -4,6 +4,7 @@ Database management and exploration routes
 from fastapi import APIRouter, HTTPException, Query, Path
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
+from enum import Enum
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.database_restart import restart_and_fix_database
@@ -81,9 +82,17 @@ class GenericResponse(BaseModel):
     message: str
 
 
-class TechnicianStatusUpdate(BaseModel):
-    """Model for updating technician status"""
-    status: str  # available, on_leave, half_day, wfh, offline, out_of_office, away
+class TechnicianAvailability(str, Enum):
+    """Enumeration for technician availability"""
+    available = "available"
+    on_leave = "on_leave"
+    half_day = "half_day"
+    wfh = "wfh"
+    offline = "offline"
+    out_of_office = "out_of_office"
+    away = "away"
+
+
 
 
 class OAuthClientUpload(BaseModel):
@@ -701,35 +710,30 @@ async def clear_table(table_name: str = Path(..., description="Name of the table
             detail=f"Error clearing table: {str(e)}"
         )
 
-@router.patch("/database/technicians/{tech_id}/status", response_model=GenericResponse)
-async def update_technician_status(
+@router.patch("/database/technicians/{tech_id}/availability", response_model=GenericResponse)
+async def update_technician_availability(
     tech_id: str = Path(..., description="The technician ID"),
-    status_update: TechnicianStatusUpdate = None
+    availability: TechnicianAvailability = Query(..., description="Select the technician availability")
 ):
     """
-    Update technician status (e.g., 'available', 'on_leave', 'wfh')
+    Update technician availability using a dropdown selection
     """
     try:
         db_conn = get_db_connection()
         
-        # Validate status
-        valid_statuses = ['available', 'on_leave', 'half_day', 'wfh', 'offline', 'out_of_office', 'away']
-        new_status = status_update.status.lower().replace(" ", "_")
-        
-        if new_status not in valid_statuses:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
-            )
+        # Validation is now handled by Pydantic Enum
+        new_val = availability.value
             
-        query = "UPDATE technician_data SET status = %s WHERE tech_id = %s"
-        db_conn.execute_query(query, (new_status, tech_id), fetch=False)
+        query = "UPDATE technician_data SET availability = %s WHERE tech_id = %s"
+        db_conn.execute_query(query, (new_val, tech_id), fetch=False)
         
         return GenericResponse(
             success=True,
-            message=f"Status for technician {tech_id} updated to {new_status}"
+            message=f"Availability for technician {tech_id} updated to {new_val}"
         )
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(
             status_code=500,
             detail=f"Error updating status: {str(e)}"

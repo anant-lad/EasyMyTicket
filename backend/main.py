@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.ticket_routes import router as ticket_router
 from routes.database_routes import router as database_router
 from routes.technician_routes import router as technician_router
+from routes.organization_routes import router as organization_router
+from routes.feedback_routes import router as feedback_router
 from src.config import Config
 from src.utils.database_startup import ensure_database_running, wait_for_database_ready
 from src.utils.database_restart import restart_and_fix_database
@@ -29,6 +31,8 @@ app.add_middleware(
 app.include_router(ticket_router, prefix="/api", tags=["tickets"])
 app.include_router(database_router, prefix="/api", tags=["database"])
 app.include_router(technician_router, prefix="/api", tags=["technician"])
+app.include_router(organization_router, prefix="/api", tags=["organizations"])
+app.include_router(feedback_router, prefix="/api", tags=["feedback"])
 
 
 @app.on_event("startup")
@@ -112,6 +116,11 @@ async def root():
                 'create_ticket': 'POST /api/tickets/create',
                 'get_all_tickets': 'GET /api/tickets',
                 'get_ticket': 'GET /api/tickets/{ticket_number}',
+            },
+            'organizations': {
+                'create_organization': 'POST /api/organizations/create',
+                'get_all_organizations': 'GET /api/organizations',
+                'get_organization': 'GET /api/organizations/{companyid}',
             },
             'database': {
                 'start_database': 'POST /api/database/start',

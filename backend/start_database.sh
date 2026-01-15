@@ -54,7 +54,7 @@ else
       -e POSTGRES_PASSWORD="$DB_PASSWORD" \
       -e POSTGRES_DB=tickets_db \
       -p 5433:5432 \
-      -v postgres-new-data:/var/lib/postgresql/data \
+      -v postgres-new-data:/var/lib/postgresql \
       -v "$POSTGRES_CONF_DIR/postgresql.conf:/etc/postgresql/postgresql.conf:ro" \
       -v "$POSTGRES_CONF_DIR/pg_hba.conf:/tmp/pg_hba.conf:ro" \
       -d postgres:18 \
@@ -62,15 +62,21 @@ else
     
     # Wait for PostgreSQL to initialize
     echo "Waiting for PostgreSQL to initialize..."
-    sleep 3
+    echo "Waiting longer for PostgreSQL to initialize..."
+    sleep 10
     
     # Copy pg_hba.conf to the data directory if config files exist
     if [ -f "$POSTGRES_CONF_DIR/pg_hba.conf" ]; then
         echo "Copying pg_hba.conf to container..."
-        docker cp "$POSTGRES_CONF_DIR/pg_hba.conf" Autotask:/var/lib/postgresql/data/pg_hba.conf
-        # Restart PostgreSQL to apply pg_hba.conf changes
-        docker exec Autotask pg_ctl restart -D /var/lib/postgresql/data -m fast || true
-        sleep 2
+        # Get data directory (Postgres 18+ uses versioned dirs)
+        DATA_DIR=$(docker exec Autotask psql -U admin -d tickets_db -t -c "SHOW data_directory;" | xargs)
+        echo "Detected data directory: $DATA_DIR"
+        
+        docker cp "$POSTGRES_CONF_DIR/pg_hba.conf" "Autotask:$DATA_DIR/pg_hba.conf"
+        # Restart container to apply changes
+        echo "Restarting container to apply changes..."
+        docker restart Autotask
+        sleep 5
     fi
 fi
 

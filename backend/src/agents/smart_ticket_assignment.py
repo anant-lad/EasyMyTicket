@@ -116,9 +116,9 @@ class SmartAssignmentAgent:
     def _get_available_technicians(self) -> List[Dict]:
         """Get all available technicians"""
         query = """
-            SELECT tech_id, tech_name, tech_mail, skills, current_workload, status
+            SELECT tech_id, tech_name, tech_mail, skills, current_workload, availability
             FROM technician_data
-            WHERE status IN ('available', 'wfh')
+            WHERE availability IN ('available', 'wfh')
             ORDER BY current_workload ASC;
         """
         
