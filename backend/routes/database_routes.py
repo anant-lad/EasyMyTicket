@@ -2,7 +2,7 @@
 Database management and exploration routes
 """
 from fastapi import APIRouter, HTTPException, Query, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 from enum import Enum
 from src.database.db_connection import DatabaseConnection
@@ -66,6 +66,7 @@ class TechnicianCreate(BaseModel):
     tech_mail: str
     tech_password: Optional[str] = None
     skills: Optional[str] = None
+    companyid: str = Field(..., description="Organization ID")
 
 
 class UserCreate(BaseModel):
@@ -74,6 +75,7 @@ class UserCreate(BaseModel):
     user_name: str
     user_mail: str
     user_password: Optional[str] = None
+    companyid: str = Field(..., description="Organization ID")
 
 
 class GenericResponse(BaseModel):
@@ -614,20 +616,22 @@ async def add_technicians(technicians: List[TechnicianCreate]):
         
         for tech in technicians:
             query = """
-                INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, companyid)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (tech_id) DO UPDATE SET
                     tech_name = EXCLUDED.tech_name,
                     tech_mail = EXCLUDED.tech_mail,
                     tech_password = EXCLUDED.tech_password,
-                    skills = EXCLUDED.skills;
+                    skills = EXCLUDED.skills,
+                    companyid = EXCLUDED.companyid;
             """
             db_conn.execute_query(query, (
                 tech.tech_id, 
                 tech.tech_name, 
                 tech.tech_mail, 
                 tech.tech_password, 
-                tech.skills
+                tech.skills,
+                tech.companyid
             ), fetch=False)
             count += 1
             
@@ -653,18 +657,20 @@ async def add_users(users: List[UserCreate]):
         
         for user in users:
             query = """
-                INSERT INTO user_data (user_id, user_name, user_mail, user_password)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO user_data (user_id, user_name, user_mail, user_password, companyid)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET
                     user_name = EXCLUDED.user_name,
                     user_mail = EXCLUDED.user_mail,
-                    user_password = EXCLUDED.user_password;
+                    user_password = EXCLUDED.user_password,
+                    companyid = EXCLUDED.companyid;
             """
             db_conn.execute_query(query, (
                 user.user_id, 
                 user.user_name, 
                 user.user_mail, 
-                user.user_password
+                user.user_password,
+                user.companyid
             ), fetch=False)
             count += 1
             
