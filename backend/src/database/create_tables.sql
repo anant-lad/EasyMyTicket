@@ -141,3 +141,35 @@ CREATE TABLE IF NOT EXISTS ticket_assignments (
 
 -- Add assigned_tech_id column to new_tickets if not exists
 ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS assigned_tech_id VARCHAR(100);
+
+-- Table 10: ticket_communications (for real-time user-technician messaging)
+CREATE TABLE IF NOT EXISTS ticket_communications (
+    message_id SERIAL PRIMARY KEY,
+    ticket_number VARCHAR(100) NOT NULL,
+    sender_type VARCHAR(20) NOT NULL CHECK (sender_type IN ('user', 'technician', 'system')),
+    sender_id VARCHAR(100) NOT NULL,
+    message_text TEXT NOT NULL,
+    message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text', 'system', 'status_update')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    read_at TIMESTAMP,
+    is_read BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_communications_ticket ON ticket_communications(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_ticket_communications_created ON ticket_communications(created_at DESC);
+
+-- Table 11: ticket_user_feedback (for user feedback and ticket reopening)
+CREATE TABLE IF NOT EXISTS ticket_user_feedback (
+    feedback_id SERIAL PRIMARY KEY,
+    ticket_number VARCHAR(100) NOT NULL,
+    user_id VARCHAR(100) NOT NULL,
+    feedback_text TEXT,
+    is_resolved BOOLEAN NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reopened BOOLEAN DEFAULT FALSE,
+    reopen_reason TEXT,
+    previous_tech_id VARCHAR(100)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_feedback_ticket ON ticket_user_feedback(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_ticket_feedback_reopened ON ticket_user_feedback(reopened);

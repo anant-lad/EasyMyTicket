@@ -1266,3 +1266,185 @@ async def update_ticket_resolution_plan_datetime(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+
+# ========== Queue Management Routes ==========
+
+@router.get("/tickets/queue/{tech_id}", response_model=TicketsListResponse)
+async def get_technician_queue(
+    tech_id: str = Path(..., description="Technician ID"),
+    status: Optional[str] = Query(None, description="Status filter")
+):
+    """Get queued tickets for a specific technician"""
+    try:
+        db_conn = get_db_connection()
+        tickets = db_conn.get_technician_queue_tickets(tech_id=tech_id, status_filter=status)
+        from datetime import datetime
+        for ticket in tickets:
+            for key, value in ticket.items():
+                if isinstance(value, datetime):
+                    ticket[key] = value.isoformat()
+        return TicketsListResponse(success=True, tickets=tickets, total=len(tickets), limit=len(tickets), offset=0, has_more=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.get("/tickets/queue", response_model=TicketsListResponse)
+async def get_all_queued_tickets(status: Optional[str] = Query(None)):
+    """Get all queued tickets"""
+    try:
+        db_conn = get_db_connection()
+        tickets = db_conn.get_technician_queue_tickets(tech_id=None, status_filter=status)
+        from datetime import datetime
+        for ticket in tickets:
+            for key, value in ticket.items():
+                if isinstance(value, datetime):
+                    ticket[key] = value.isoformat()
+        return TicketsListResponse(success=True, tickets=tickets, total=len(tickets), limit=len(tickets), offset=0, has_more=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# ========== Full Ticket Details ==========
+
+class FullTicketDetailsResponse(BaseModel):
+    success: bool
+    ticket: Dict[str, Any]
+    technician: Optional[Dict[str, Any]] = None
+    user: Optional[Dict[str, Any]] = None
+    attachments: List[Dict[str, Any]] = []
+    context: Optional[Dict[str, Any]] = None
+    communications: List[Dict[str, Any]] = []
+
+
+@router.get("/tickets/{ticket_number}/full-details", response_model=FullTicketDetailsResponse)
+async def get_full_ticket_details(ticket_number: str):
+    """Get complete ticket information"""
+    try:
+        db_conn = get_db_connection()
+        from datetime import datetime
+        
+        ticket = None
+        for table in ["new_tickets", "resolved_tickets", "closed_tickets"]:
+            result = db_conn.execute_query(f"SELECT * FROM {table} WHERE ticketnumber = %s", (ticket_number,))
+            if result:
+                ticket = dict(result[0])
+                break
+        
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        for key, value in ticket.items():
+            if isinstance(value, datetime):
+                ticket[key] = value.isoformat()
+        
+        technician = None
+        if ticket.get('assigned_tech_id'):
+            tech_result = db_conn.execute_query("SELECT tech_id, tech_name, tech_mail, skills FROM technician_data WHERE tech_id = %s", (ticket['assigned_tech_id'],))
+            if tech_result:
+                technician = dict(tech_result[0])
+        
+        user = None
+        if ticket.get('user_id'):
+            user_result = db_conn.execute_query("SELECT user_id, user_name, user_mail FROM user_data WHERE user_id = %s", (ticket['user_id'],))
+            if user_result:
+                user = dict(user_result[0])
+        
+        attachments = db_conn.get_attachments(ticket_number)
+        for att in attachments:
+            for key, value in att.items():
+                if isinstance(value, datetime):
+                    att[key] = value.isoformat()
+        
+        context = db_conn.get_ticket_context(ticket_number)
+        if context:
+            for key, value in context.items():
+                if isinstance(value, datetime):
+                    context[key] = value.isoformat()
+        
+        communications = db_conn.get_ticket_communications(ticket_number)
+        for comm in communications:
+            for key, value in comm.items():
+                if isinstance(value, datetime):
+                    comm[key] = value.isoformat()
+        
+        return FullTicketDetailsResponse(success=True, ticket=ticket, technician=technician, user=user, attachments=attachments, context=context, communications=communications)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+# ========== Communication Routes ==========
+
+class CommunicationRequest(BaseModel):
+    sender_type: str
+    sender_id: str
+    message_text: str
+    message_type: str = "text"
+
+
+@router.post("/tickets/{ticket_number}/communicate")
+async def post_ticket_message(ticket_number: str, request: CommunicationRequest):
+    """Post a message"""
+    try:
+        db_conn = get_db_connection()
+        message_id = db_conn.insert_ticket_communication({'ticket_number': ticket_number, 'sender_type': request.sender_type, 'sender_id': request.sender_id, 'message_text': request.message_text, 'message_type': request.message_type})
+        return {"success": True, "message_id": message_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tickets/{ticket_number}/communications")
+async def get_ticket_messages(ticket_number: str, limit: int = 50):
+    """Get communication history"""
+    try:
+        db_conn = get_db_connection()
+        messages = db_conn.get_ticket_communications(ticket_number, limit)
+        from datetime import datetime
+        for msg in messages:
+            for key, value in msg.items():
+                if isinstance(value, datetime):
+                    msg[key] = value.isoformat()
+        return {"success": True, "messages": messages, "total": len(messages)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Feedback Routes ==========
+
+class FeedbackRequest(BaseModel):
+    user_id: str
+    is_resolved: bool
+    feedback_text: Optional[str] = None
+    reopen_reason: Optional[str] = None
+
+
+@router.post("/tickets/{ticket_number}/feedback")
+async def submit_ticket_feedback(ticket_number: str, request: FeedbackRequest):
+    """Submit feedback and optionally reopen ticket"""
+    try:
+        db_conn = get_db_connection()
+        ticket = None
+        previous_tech_id = None
+        for table in ["resolved_tickets", "closed_tickets"]:
+            result = db_conn.execute_query(f"SELECT assigned_tech_id FROM {table} WHERE ticketnumber = %s", (ticket_number,))
+            if result:
+                ticket = result[0]
+                previous_tech_id = ticket.get('assigned_tech_id')
+                break
+        
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        feedback_id = db_conn.insert_ticket_feedback({'ticket_number': ticket_number, 'user_id': request.user_id, 'is_resolved': request.is_resolved, 'feedback_text': request.feedback_text, 'reopen_reason': request.reopen_reason, 'previous_tech_id': previous_tech_id})
+        
+        reopened = False
+        if not request.is_resolved:
+            reopened = db_conn.reopen_ticket(ticket_number, request.reopen_reason or "Not resolved", request.user_id)
+        
+        return {"success": True, "feedback_id": feedback_id, "reopened": reopened}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -90,6 +90,27 @@ class FileProcessor:
                 print("Error: beautifulsoup4 not installed")
                 self._lazy_imports['bs4'] = None
     
+    def _import_rtf_libraries(self):
+        """Lazy import RTF processing libraries"""
+        if 'striprtf' not in self._lazy_imports:
+            try:
+                from striprtf.striprtf import rtf_to_text
+                self._lazy_imports['striprtf'] = rtf_to_text
+            except ImportError:
+                print("Warning: striprtf not installed, RTF files will not be processed")
+                self._lazy_imports['striprtf'] = None
+    
+    def _import_odt_libraries(self):
+        """Lazy import ODT processing libraries"""
+        if 'odf' not in self._lazy_imports:
+            try:
+                from odf import text, teletype
+                from odf.opendocument import load
+                self._lazy_imports['odf'] = {'text': text, 'teletype': teletype, 'load': load}
+            except ImportError:
+                print("Warning: odfpy not installed, ODT files will not be processed")
+                self._lazy_imports['odf'] = None
+    
     def process_file(self, file_path: str, file_type: str) -> Dict[str, Any]:
         """
         Process a file and extract its content
@@ -127,6 +148,12 @@ class FileProcessor:
                 result = self.extract_xml_html(file_path, file_type)
             elif file_type in ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff']:
                 result = self.extract_image(file_path)
+            elif file_type == 'rtf':
+                result = self.extract_rtf(file_path)
+            elif file_type == 'odt':
+                result = self.extract_odt(file_path)
+            elif file_type in ['md', 'markdown']:
+                result = self.extract_txt(file_path)  # Markdown is plain text
             else:
                 result['processing_status'] = 'unsupported'
                 result['error'] = f'Unsupported file type: {file_type}'
@@ -425,6 +452,115 @@ class FileProcessor:
             print(f"Error extracting image: {e}")
         
         return result
+    
+    def extract_rtf(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from RTF files"""
+        self._import_rtf_libraries()
+        
+        result = {
+            'extracted_text': '',
+            'tables': [],
+            'metadata': {},
+            'processing_status': 'completed'
+        }
+        
+        try:
+            if 'striprtf' in self._lazy_imports and self._lazy_imports['striprtf']:
+                rtf_to_text = self._lazy_imports['striprtf']
+                
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                    rtf_content = file.read()
+                
+                text = rtf_to_text(rtf_content)
+                result['extracted_text'] = text
+                result['metadata'] = {
+                    'method': 'striprtf'
+                }
+            else:
+                result['processing_status'] = 'failed'
+                result['error'] = 'striprtf library not available'
+        
+        except Exception as e:
+            result['processing_status'] = 'failed'
+            result['error'] = str(e)
+            print(f"Error extracting RTF: {e}")
+        
+        return result
+    
+    def extract_odt(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from ODT files"""
+        self._import_odt_libraries()
+        
+        result = {
+            'extracted_text': '',
+            'tables': [],
+            'metadata': {},
+            'processing_status': 'completed'
+        }
+        
+        try:
+            if 'odf' in self._lazy_imports and self._lazy_imports['odf']:
+                odf_libs = self._lazy_imports['odf']
+                load = odf_libs['load']
+                teletype = odf_libs['teletype']
+                
+                doc = load(file_path)
+                all_text = teletype.extractText(doc.text)
+                
+                result['extracted_text'] = all_text
+                result['metadata'] = {
+                    'method': 'odfpy'
+                }
+            else:
+                result['processing_status'] = 'failed'
+                result['error'] = 'odfpy library not available'
+        
+        except Exception as e:
+            result['processing_status'] = 'failed'
+            result['error'] = str(e)
+            print(f"Error extracting ODT: {e}")
+        
+        return result
+    
+    def validate_file_type(self, file_type: str) -> Dict[str, Any]:
+        """Validate if file type is supported and return capabilities"""
+        file_type = file_type.lower().strip('.')
+        
+        supported_types = {
+            'pdf': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'pdfplumber'},
+            'docx': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'python-docx'},
+            'doc': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'python-docx'},
+            'txt': {'capabilities': ['text_extraction'], 'processor': 'direct'},
+            'csv': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'pandas'},
+            'xlsx': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'pandas'},
+            'xls': {'capabilities': ['text_extraction', 'table_extraction'], 'processor': 'pandas'},
+            'png': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'jpg': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'jpeg': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'gif': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'bmp': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'tiff': {'capabilities': ['ocr', 'text_extraction'], 'processor': 'pytesseract'},
+            'rtf': {'capabilities': ['text_extraction'], 'processor': 'striprtf'},
+            'odt': {'capabilities': ['text_extraction'], 'processor': 'odfpy'},
+            'md': {'capabilities': ['text_extraction'], 'processor': 'direct'},
+            'markdown': {'capabilities': ['text_extraction'], 'processor': 'direct'},
+            'xml': {'capabilities': ['text_extraction'], 'processor': 'beautifulsoup4'},
+            'html': {'capabilities': ['text_extraction'], 'processor': 'beautifulsoup4'},
+        }
+        
+        if file_type in supported_types:
+            return {
+                'supported': True,
+                'file_type': file_type,
+                **supported_types[file_type]
+            }
+        else:
+            return {
+                'supported': False,
+                'file_type': file_type,
+                'capabilities': [],
+                'processor': None
+            }
 
 
 # Singleton instance

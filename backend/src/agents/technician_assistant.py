@@ -207,3 +207,58 @@ class TechnicianAssistantAgent:
         }
         """
         return prompt
+
+    def retrieve_full_ticket_info(self, ticket_number: str) -> Optional[Dict[str, Any]]:
+        """Retrieve complete ticket information including technician, user, attachments, and context"""
+        try:
+            print(f"\n📋 Retrieving full ticket information for {ticket_number}...")
+            ticket = None
+            for table in ["new_tickets", "resolved_tickets", "closed_tickets"]:
+                result = self.db_connection.execute_query(f"SELECT * FROM {table} WHERE ticketnumber = %s", (ticket_number,))
+                if result:
+                    ticket = dict(result[0])
+                    ticket['source_table'] = table
+                    break
+            
+            if not ticket:
+                print(f"   ❌ Ticket {ticket_number} not found")
+                return None
+            
+            if ticket.get('assigned_tech_id'):
+                tech_result = self.db_connection.execute_query("SELECT tech_id, tech_name, tech_mail, skills FROM technician_data WHERE tech_id = %s", (ticket['assigned_tech_id'],))
+                if tech_result:
+                    ticket['technician'] = dict(tech_result[0])
+            
+            if ticket.get('user_id'):
+                user_result = self.db_connection.execute_query("SELECT user_id, user_name, user_mail FROM user_data WHERE user_id = %s", (ticket['user_id'],))
+                if user_result:
+                    ticket['user'] = dict(user_result[0])
+            
+            ticket['attachments'] = self.db_connection.get_attachments(ticket_number)
+            ticket['context'] = self.db_connection.get_ticket_context(ticket_number)
+            
+            print(f"   ✅ Retrieved full ticket information")
+            return ticket
+        except Exception as e:
+            print(f"   ❌ Error retrieving full ticket info: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def perform_web_search(self, query: str, num_results: int = 5) -> List[Dict]:
+        """Perform internet search for technical queries"""
+        try:
+            print(f"\n🔍 Performing web search for: {query}")
+            from src.services.web_search_service import get_web_search_service
+            search_service = get_web_search_service()
+            results = search_service.search(query, num_results)
+            if results:
+                print(f"   ✅ Found {len(results)} search results")
+            else:
+                print(f"   ⚠️  No search results found")
+            return results
+        except Exception as e:
+            print(f"   ❌ Error performing web search: {e}")
+            import traceback
+            traceback.print_exc()
+            return []

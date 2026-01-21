@@ -1379,5 +1379,268 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
         """
         results = self.execute_query(query, (limit,))
         return results if results else []
+    
+    # ========== Ticket Communications Methods ==========
+    
+    def insert_ticket_communication(self, comm_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Insert a communication message for a ticket
+        
+        Args:
+            comm_data: Dictionary containing communication fields
+                - ticket_number (required)
+                - sender_type (required): 'user', 'technician', or 'system'
+                - sender_id (required)
+                - message_text (required)
+                - message_type (optional): 'text', 'system', 'status_update'
+        
+        Returns:
+            Message ID if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            required_fields = ['ticket_number', 'sender_type', 'sender_id', 'message_text']
+            for field in required_fields:
+                if field not in comm_data:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            query = """
+                INSERT INTO ticket_communications 
+                (ticket_number, sender_type, sender_id, message_text, message_type)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING message_id
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, (
+                    comm_data['ticket_number'],
+                    comm_data['sender_type'],
+                    comm_data['sender_id'],
+                    comm_data['message_text'],
+                    comm_data.get('message_type', 'text')
+                ))
+                message_id = cur.fetchone()[0]
+                conn.commit()
+                print(f"✅ Communication message inserted with ID: {message_id}")
+                return message_id
+        except Exception as e:
+            conn.rollback()
+            print(f"Error inserting communication: {e}")
+            raise
+    
+    def get_ticket_communications(self, ticket_number: str, limit: int = 50) -> List[Dict]:
+        """
+        Get communication history for a ticket
+        
+        Args:
+            ticket_number: Ticket number
+            limit: Maximum number of messages to return
+        
+        Returns:
+            List of communication messages ordered by created_at DESC
+        """
+        query = """
+            SELECT * FROM ticket_communications
+            WHERE ticket_number = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        results = self.execute_query(query, (ticket_number, limit))
+        return results if results else []
+    
+    # ========== Ticket User Feedback Methods ==========
+    
+    def insert_ticket_feedback(self, feedback_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Insert user feedback for a resolved/closed ticket
+        
+        Args:
+            feedback_data: Dictionary containing feedback fields
+                - ticket_number (required)
+                - user_id (required)
+                - is_resolved (required): True if satisfied, False if not resolved
+                - feedback_text (optional)
+                - reopen_reason (optional)
+                - previous_tech_id (optional)
+        
+        Returns:
+            Feedback ID if successful, None otherwise
+        """
+        conn = self.get_connection()
+        try:
+            required_fields = ['ticket_number', 'user_id', 'is_resolved']
+            for field in required_fields:
+                if field not in feedback_data:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            query = """
+                INSERT INTO ticket_user_feedback 
+                (ticket_number, user_id, is_resolved, feedback_text, reopen_reason, previous_tech_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING feedback_id
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(query, (
+                    feedback_data['ticket_number'],
+                    feedback_data['user_id'],
+                    feedback_data['is_resolved'],
+                    feedback_data.get('feedback_text'),
+                    feedback_data.get('reopen_reason'),
+                    feedback_data.get('previous_tech_id')
+                ))
+                feedback_id = cur.fetchone()[0]
+                conn.commit()
+                print(f"✅ Ticket feedback inserted with ID: {feedback_id}")
+                return feedback_id
+        except Exception as e:
+            conn.rollback()
+            print(f"Error inserting feedback: {e}")
+            raise
+    
+    def reopen_ticket(self, ticket_number: str, reason: str, user_id: str) -> bool:
+        """
+        Reopen a closed/resolved ticket based on user feedback
+        Reassigns to the same technician who previously handled the ticket
+        Preserves all communication history
+        
+        Args:
+            ticket_number: Ticket number to reopen
+            reason: Reason for reopening
+            user_id: User ID who requested reopening
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        conn = self.get_connection()
+        try:
+            # Find ticket in resolved_tickets or closed_tickets
+            ticket = None
+            source_table = None
+            assigned_tech_id = None
+            
+            for table in ['resolved_tickets', 'closed_tickets']:
+                query = f"SELECT * FROM {table} WHERE ticketnumber = %s"
+                result = self.execute_query(query, (ticket_number,))
+                if result:
+                    ticket = result[0]
+                    source_table = table
+                    # Try to get assigned_tech_id if column exists
+                    assigned_tech_id = ticket.get('assigned_tech_id')
+                    break
+            
+            if not ticket:
+                print(f"Ticket {ticket_number} not found in resolved or closed tickets")
+                return False
+            
+            # Move ticket back to new_tickets with status "TO DO"
+            ticket_dict = dict(ticket)
+            ticket_dict['status'] = 'TO DO'
+            ticket_dict['resolveddatetime'] = None
+            ticket_dict['completeddate'] = None
+            
+            # Preserve assigned_tech_id for reassignment to same technician
+            if assigned_tech_id:
+                ticket_dict['assigned_tech_id'] = assigned_tech_id
+            
+            # Delete from source table
+            delete_query = f"DELETE FROM {source_table} WHERE ticketnumber = %s"
+            self.execute_query(delete_query, (ticket_number,), fetch=False)
+            
+            # Insert into new_tickets
+            columns = [k for k in ticket_dict.keys() if ticket_dict[k] is not None and k != 'id']
+            values = [ticket_dict[k] for k in columns]
+            placeholders = ', '.join(['%s'] * len(columns))
+            
+            insert_query = f"""
+                INSERT INTO new_tickets ({', '.join(columns)})
+                VALUES ({placeholders})
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(insert_query, values)
+                conn.commit()
+            
+            # Update feedback record to mark as reopened
+            update_feedback = """
+                UPDATE ticket_user_feedback
+                SET reopened = TRUE
+                WHERE ticket_number = %s AND user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            self.execute_query(update_feedback, (ticket_number, user_id), fetch=False)
+            
+            # Add system message to communications
+            system_message = {
+                'ticket_number': ticket_number,
+                'sender_type': 'system',
+                'sender_id': 'system',
+                'message_text': f"Ticket reopened by user. Reason: {reason}",
+                'message_type': 'status_update'
+            }
+            self.insert_ticket_communication(system_message)
+            
+            print(f"✅ Ticket {ticket_number} reopened and reassigned to {assigned_tech_id}")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error reopening ticket: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    # ========== Queue Management Methods ==========
+    
+    def get_technician_queue_tickets(
+        self, 
+        tech_id: Optional[str] = None, 
+        status_filter: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get queued tickets (not in progress)
+        If tech_id is provided, filters by assigned technician
+        If tech_id is None, returns all queued tickets
+        Maps queueid field to assigned tickets
+        
+        Args:
+            tech_id: Technician ID to filter by (optional)
+            status_filter: Additional status filter (optional)
+        
+        Returns:
+            List of queued ticket dictionaries
+        """
+        try:
+            where_clauses = ["status != 'In Progress'"]
+            params = []
+            
+            if tech_id:
+                where_clauses.append("assigned_tech_id = %s")
+                params.append(tech_id)
+            
+            if status_filter:
+                where_clauses.append("status = %s")
+                params.append(status_filter)
+            
+            where_str = " AND ".join(where_clauses)
+            
+            query = f"""
+                SELECT 
+                    ticketnumber, title, description, user_id, createdate,
+                    duedatetime, status, priority, issuetype, subissuetype,
+                    ticketcategory, tickettype, assigned_tech_id, queueid,
+                    estimatedhours, resolutionplandatetime
+                FROM new_tickets
+                WHERE {where_str}
+                ORDER BY createdate DESC
+            """
+            
+            results = self.execute_query(query, tuple(params))
+            return results if results else []
+            
+        except Exception as e:
+            print(f"Error getting queue tickets: {e}")
+            return []
 
 
