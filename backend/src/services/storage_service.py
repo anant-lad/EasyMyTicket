@@ -250,6 +250,50 @@ class StorageService:
             print(f"Error getting file info for {file_path}: {e}")
         
         return None
+    
+    def save_email_attachment(self, temp_file_path: str, ticket_number: str, original_filename: str) -> str:
+        """
+        Save an email attachment from a temporary file to permanent storage
+        
+        Args:
+            temp_file_path: Path to the temporary file containing attachment data
+            ticket_number: Ticket number for organization
+            original_filename: Original filename from the email
+            
+        Returns:
+            Path to the saved file
+            
+        Raises:
+            Exception: If file saving fails
+        """
+        # Generate secure filename
+        secure_filename = self._generate_secure_filename(original_filename, ticket_number)
+        
+        # Create ticket-specific subdirectory
+        ticket_dir = os.path.join(self.upload_directory, ticket_number)
+        Path(ticket_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Full file path
+        file_path = os.path.join(ticket_dir, secure_filename)
+        
+        try:
+            # Copy from temp file to permanent storage
+            shutil.copy2(temp_file_path, file_path)
+            
+            # Verify file size
+            file_size = os.path.getsize(file_path)
+            if file_size > self.MAX_FILE_SIZE:
+                os.remove(file_path)
+                raise Exception(f"File too large: {file_size} bytes (max: {self.MAX_FILE_SIZE})")
+            
+            print(f"✓ Email attachment saved: {file_path} ({file_size} bytes)")
+            return file_path
+            
+        except Exception as e:
+            # Clean up on error
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise Exception(f"Failed to save email attachment: {str(e)}")
 
 
 # Singleton instance

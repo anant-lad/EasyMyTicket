@@ -40,11 +40,20 @@ class Config:
     SIMILARITY_THRESHOLD = 0.3
     SEMANTIC_SEARCH_BATCH_SIZE = 500
     
-    # Email Configuration
+    # Email Configuration (SMTP for sending)
     SUPPORT_EMAIL = os.getenv('SUPPORT_EMAIL', '')
     SUPPORT_EMAIL_APP_PASSWORD = os.getenv('SUPPORT_EMAIL_APP_PASSWORD', '')
     SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     SMTP_PORT = int(os.getenv('SMTP_PORT', 465))
+    
+    # IMAP Configuration (for receiving emails to create tickets)
+    IMAP_SERVER = os.getenv('IMAP_SERVER', 'imap.gmail.com')
+    IMAP_PORT = int(os.getenv('IMAP_PORT', 993))
+    IMAP_USE_SSL = os.getenv('IMAP_USE_SSL', 'true').lower() == 'true'
+    EMAIL_CHECK_INTERVAL = int(os.getenv('EMAIL_CHECK_INTERVAL', 60))  # seconds
+    PROCESSED_EMAIL_FOLDER = os.getenv('PROCESSED_EMAIL_FOLDER', 'Processed')
+    AUTO_START_EMAIL_AGENT = os.getenv('AUTO_START_EMAIL_AGENT', 'false').lower() == 'true'
+    EMAIL_AGENT_MAX_EMAILS = int(os.getenv('EMAIL_AGENT_MAX_EMAILS', 10))
     
     # File Upload Settings
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
