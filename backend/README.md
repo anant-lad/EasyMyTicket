@@ -11,6 +11,7 @@ An intelligent ticket classification system that uses LLM (GROQ) to extract meta
 - **Technician Management**: API routes for status updates (Google OAuth supported) and workload tracking.
 - **FastAPI Backend**: Modern, fast, and automatically documented API.
 - **Database Exploration**: Built-in tools to browse and analyze ticket data.
+- **Secure S3 Backups**: Automated, AES-256 encrypted database backups stored in AWS S3 for portability and disaster recovery.
 
 ## System Architecture
 
@@ -25,6 +26,10 @@ An intelligent ticket classification system that uses LLM (GROQ) to extract meta
 - Python 3.8+
 - PostgreSQL (running in Docker)
 - GROQ API Key
+
+## Migration (Local to Cloud)
+
+If you are looking to migrate this project from your local environment to a cloud server using secure S3 backups, please refer to the [Migration Guide](MIGRATION_GUIDE.md).
 
 ## Setup
 

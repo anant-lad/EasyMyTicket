@@ -124,6 +124,8 @@ venv.bak/
 # Project-specific
 uploads/
 dataset/
+*.sql
+*.enc
 =0.4.1
 oauth_cilent/*.json
 postgres/*.conf

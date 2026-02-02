@@ -24,6 +24,12 @@ if docker ps -a 2>/dev/null | grep -q Autotask; then
         echo "Starting container..."
         docker start Autotask
     fi
+    
+    # Automated background backup on startup
+    if [ -n "$S3_BUCKET_NAME" ] && [ -n "$BACKUP_ENCRYPTION_KEY" ]; then
+        echo "💾 Taking automated background S3 backup..."
+        ./scripts/s3_backup.sh &
+    fi
 else
     echo "Container does not exist. Creating it..."
     
@@ -77,6 +83,14 @@ else
         echo "Restarting container to apply changes..."
         docker restart Autotask
         sleep 5
+    fi
+
+    # Automated S3 Restore Logic for new containers
+    if [ -n "$S3_BUCKET_NAME" ] && [ -n "$BACKUP_ENCRYPTION_KEY" ]; then
+        echo "📂 Checking for latest backup in S3..."
+        ./scripts/s3_restore.sh
+    else
+        echo "ℹ S3 configuration not complete. Starting with an empty database."
     fi
 fi
 
