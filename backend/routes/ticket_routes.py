@@ -116,6 +116,12 @@ class ResolutionResponse(BaseModel):
     ticket_title: Optional[str] = None
 
 
+class ReopenTicketRequest(BaseModel):
+    """Request model for reopening a ticket"""
+    reason: str = Field(..., description="Reason for reopening the ticket", min_length=5)
+    user_id: str = Field(..., description="User ID requesting the reopen")
+
+
 class HealthResponse(BaseModel):
     """Response model for health check"""
     status: str
@@ -205,11 +211,38 @@ async def create_ticket(
         db_conn = get_db_connection()
         
         # Validate companyid exists in organizations table
+        # Validate companyid exists in organizations table
         organization = db_conn.get_organization_by_companyid(companyid)
         if not organization:
             raise HTTPException(
                 status_code=400,
-                detail=f'Invalid companyid: {companyid}. Organization does not exist. Please create the organization first.'
+                detail=f'Invalid companyid: {companyid}. Organization does not exist.'
+            )
+            
+        # Validate that the user belongs to the specified company
+        # Check user_data table first
+        user_check_query = "SELECT companyid FROM user_data WHERE user_id = %s"
+        user_result = db_conn.execute_query(user_check_query, (user_id,))
+        
+        user_belongs_to_company = False
+        if user_result:
+            if user_result[0]['companyid'] == companyid:
+                user_belongs_to_company = True
+            else:
+                 # SUPER ADMIN OVERRIDE (Optional: if super admin can create for any org)
+                 # For now, strict check: User must belong to company
+                 pass
+        else:
+            # Check technician_data if not in user_data
+             tech_check_query = "SELECT companyid FROM technician_data WHERE tech_id = %s"
+             tech_result = db_conn.execute_query(tech_check_query, (user_id,))
+             if tech_result and tech_result[0]['companyid'] == companyid:
+                 user_belongs_to_company = True
+        
+        if not user_belongs_to_company:
+             raise HTTPException(
+                status_code=403,
+                detail=f'Permission Denied: User {user_id} does not belong to organization {companyid}'
             )
         
         # Generate ticket number immediately
@@ -603,24 +636,12 @@ async def get_all_tickets(
     priority: Optional[str] = Query(None, description="Filter by priority (e.g., 'High', 'Medium', 'Low')"),
     issuetype: Optional[str] = Query(None, description="Filter by issue type"),
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
-    order_by: str = Query('createdate', description="Column to order by (createdate, duedatetime, ticketnumber, title, status, priority, issuetype)"),
+    companyid: Optional[str] = Query(None, description="Filter by Company ID (Required for multi-tenancy)"),
+    order_by: str = Query('createdate', description="Column to order by"),
     order_direction: str = Query('DESC', regex='^(ASC|DESC)$', description="Order direction: ASC or DESC")
 ):
     """
     Get all tickets with pagination, filtering, and sorting
-    
-    Query Parameters:
-        - limit: Maximum number of tickets to return (1-1000, default: 50)
-        - offset: Number of tickets to skip for pagination (default: 0)
-        - status: Filter by ticket status (optional)
-        - priority: Filter by priority level (optional)
-        - issuetype: Filter by issue type (optional)
-        - user_id: Filter by user ID (optional)
-        - order_by: Column to sort by (default: 'createdate')
-        - order_direction: Sort direction 'ASC' or 'DESC' (default: 'DESC')
-    
-    Returns:
-        TicketsListResponse with list of tickets and pagination info
     """
     try:
         db_conn = get_db_connection()
@@ -632,6 +653,7 @@ async def get_all_tickets(
             priority=priority,
             issuetype=issuetype,
             user_id=user_id,
+            companyid=companyid, # Pass companyid to database method
             order_by=order_by,
             order_direction=order_direction
         )
@@ -954,20 +976,22 @@ async def resolve_ticket(
     try:
         db_conn = get_db_connection()
         
-        # 1. Get ticket details to find assigned technician
-        query = "SELECT assigned_tech_id, status FROM new_tickets WHERE ticketnumber = %s"
-        results = db_conn.execute_query(query, (ticket_number,))
+        # 1. Get ticket details to find assigned technician from assignments table
+        tech_id = None
         
-        if not results:
-            raise HTTPException(status_code=404, detail="Ticket not found")
+        # Check assignments table for active assignment
+        assign_query = """
+            SELECT tech_id FROM ticket_assignments 
+            WHERE ticket_number = %s 
+            ORDER BY assigned_at DESC LIMIT 1
+        """
+        assign_results = db_conn.execute_query(assign_query, (ticket_number,))
+        if assign_results:
+            tech_id = assign_results[0]['tech_id']
             
-        ticket = results[0]
-        tech_id = ticket.get('assigned_tech_id')
-        
         # 2. Update ticket status to 'Closed' (or whatever value represents closed)
-        # Using status label 'Closed' and assuming it has a value
-        picklist_loader = get_picklist_loader()
-        closed_status = picklist_loader.get_value('status', 'Closed') or '3' # Fallback to 3 if unknown
+        # Using explicit 'Closed' string to match frontend expectations (previous implementation used picklist value '4' which caused mismatch)
+        closed_status = 'Closed'
         
         update_query = "UPDATE new_tickets SET status = %s, resolveddatetime = NOW() WHERE ticketnumber = %s"
         db_conn.execute_query(update_query, (closed_status, ticket_number), fetch=False)
@@ -1339,8 +1363,23 @@ async def get_full_ticket_details(ticket_number: str):
                 ticket[key] = value.isoformat()
         
         technician = None
-        if ticket.get('assigned_tech_id'):
-            tech_result = db_conn.execute_query("SELECT tech_id, tech_name, tech_mail, skills FROM technician_data WHERE tech_id = %s", (ticket['assigned_tech_id'],))
+        assigned_tech_id = ticket.get('assigned_tech_id')
+        
+        # Fallback: Check ticket_assignments if not in ticket dict
+        if not assigned_tech_id:
+            assign_query = """
+                SELECT tech_id FROM ticket_assignments 
+                WHERE ticket_number = %s 
+                ORDER BY assigned_at DESC LIMIT 1
+            """
+            assign_results = db_conn.execute_query(assign_query, (ticket_number,))
+            if assign_results:
+                assigned_tech_id = assign_results[0]['tech_id']
+                # Inject back into ticket for consistency
+                ticket['assigned_tech_id'] = assigned_tech_id
+        
+        if assigned_tech_id:
+            tech_result = db_conn.execute_query("SELECT tech_id, tech_name, tech_mail, skills FROM technician_data WHERE tech_id = %s", (assigned_tech_id,))
             if tech_result:
                 technician = dict(tech_result[0])
         
@@ -1425,16 +1464,30 @@ async def submit_ticket_feedback(ticket_number: str, request: FeedbackRequest):
     """Submit feedback and optionally reopen ticket"""
     try:
         db_conn = get_db_connection()
-        ticket = None
-        previous_tech_id = None
-        for table in ["resolved_tickets", "closed_tickets"]:
-            result = db_conn.execute_query(f"SELECT assigned_tech_id FROM {table} WHERE ticketnumber = %s", (ticket_number,))
+        if not request.is_resolved:
+             # Try to find who was working on it
+            query = """
+                SELECT tech_id FROM ticket_assignments 
+                WHERE ticket_number = %s 
+                ORDER BY assigned_at DESC LIMIT 1
+            """
+            result = db_conn.execute_query(query, (ticket_number,))
             if result:
-                ticket = result[0]
-                previous_tech_id = ticket.get('assigned_tech_id')
-                break
+                previous_tech_id = result[0]['tech_id']
+            else:
+                 # Fallback: check new_tickets if it's there
+                 res = db_conn.execute_query("SELECT assigned_tech_id FROM new_tickets WHERE ticketnumber = %s", (ticket_number,))
+                 if res:
+                     previous_tech_id = res[0]['assigned_tech_id']
+
+        # Verify ticket exists in any table
+        ticket_exists = False
+        for table in ["new_tickets", "resolved_tickets", "closed_tickets"]:
+             if db_conn.execute_query(f"SELECT 1 FROM {table} WHERE ticketnumber = %s", (ticket_number,)):
+                 ticket_exists = True
+                 break
         
-        if not ticket:
+        if not ticket_exists:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
         feedback_id = db_conn.insert_ticket_feedback({'ticket_number': ticket_number, 'user_id': request.user_id, 'is_resolved': request.is_resolved, 'feedback_text': request.feedback_text, 'reopen_reason': request.reopen_reason, 'previous_tech_id': previous_tech_id})
@@ -1444,6 +1497,51 @@ async def submit_ticket_feedback(ticket_number: str, request: FeedbackRequest):
             reopened = db_conn.reopen_ticket(ticket_number, request.reopen_reason or "Not resolved", request.user_id)
         
         return {"success": True, "feedback_id": feedback_id, "reopened": reopened}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReopenRejectRequest(BaseModel):
+    """Request model for rejecting a reopen request"""
+    reason: str = Field(..., description="Reason for rejection", min_length=5)
+    tech_id: str = Field(..., description="Technician ID rejecting the request")
+
+
+@router.post("/tickets/{ticket_number}/reopen/accept", response_model=GenericResponse)
+async def accept_ticket_reopen(
+    ticket_number: str = Path(..., description="The ticket number"),
+):
+    """Accept a reopen request, moving ticket to 'TO DO'"""
+    try:
+        db_conn = get_db_connection()
+        success = db_conn.accept_reopened_ticket(ticket_number)
+        
+        if not success:
+             raise HTTPException(status_code=500, detail="Failed to accept reopen request")
+             
+        return GenericResponse(success=True, message=f"Ticket {ticket_number} reopen accepted.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tickets/{ticket_number}/reopen/reject", response_model=GenericResponse)
+async def reject_ticket_reopen(
+    ticket_number: str = Path(..., description="The ticket number"),
+    request: ReopenRejectRequest = None
+):
+    """Reject a reopen request, moving ticket back to 'Closed'"""
+    try:
+        db_conn = get_db_connection()
+        success = db_conn.reject_reopened_ticket(ticket_number, request.reason, request.tech_id)
+        
+        if not success:
+             raise HTTPException(status_code=500, detail="Failed to reject reopen request")
+             
+        return GenericResponse(success=True, message=f"Ticket {ticket_number} reopen rejected.")
     except HTTPException:
         raise
     except Exception as e:

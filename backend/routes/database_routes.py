@@ -8,6 +8,7 @@ from enum import Enum
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.database_restart import restart_and_fix_database
+from src.utils.auth_utils import get_password_hash
 import subprocess
 import os
 
@@ -66,6 +67,7 @@ class TechnicianCreate(BaseModel):
     tech_mail: str
     tech_password: Optional[str] = None
     skills: Optional[str] = None
+    role: str = "technician"
     companyid: str = Field(..., description="Organization ID")
 
 
@@ -75,6 +77,7 @@ class UserCreate(BaseModel):
     user_name: str
     user_mail: str
     user_password: Optional[str] = None
+    role: str = "user"
     companyid: str = Field(..., description="Organization ID")
 
 
@@ -615,23 +618,30 @@ async def add_technicians(technicians: List[TechnicianCreate]):
         count = 0
         
         for tech in technicians:
+            # Hash the password
+            hashed_password = get_password_hash(tech.tech_password) if tech.tech_password else None
+
             query = """
-                INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, companyid)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, companyid, role, password_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (tech_id) DO UPDATE SET
                     tech_name = EXCLUDED.tech_name,
                     tech_mail = EXCLUDED.tech_mail,
                     tech_password = EXCLUDED.tech_password,
                     skills = EXCLUDED.skills,
-                    companyid = EXCLUDED.companyid;
+                    companyid = EXCLUDED.companyid,
+                    role = EXCLUDED.role,
+                    password_hash = EXCLUDED.password_hash;
             """
             db_conn.execute_query(query, (
                 tech.tech_id, 
                 tech.tech_name, 
                 tech.tech_mail, 
-                tech.tech_password, 
+                hashed_password, # Store hash in legacy column
                 tech.skills,
-                tech.companyid
+                tech.companyid,
+                tech.role,
+                hashed_password  # Store hash in new column
             ), fetch=False)
             count += 1
             
@@ -656,21 +666,28 @@ async def add_users(users: List[UserCreate]):
         count = 0
         
         for user in users:
+            # Hash the password
+            hashed_password = get_password_hash(user.user_password) if user.user_password else None
+            
             query = """
-                INSERT INTO user_data (user_id, user_name, user_mail, user_password, companyid)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO user_data (user_id, user_name, user_mail, user_password, companyid, role, password_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET
                     user_name = EXCLUDED.user_name,
                     user_mail = EXCLUDED.user_mail,
                     user_password = EXCLUDED.user_password,
-                    companyid = EXCLUDED.companyid;
+                    companyid = EXCLUDED.companyid,
+                    role = EXCLUDED.role,
+                    password_hash = EXCLUDED.password_hash;
             """
             db_conn.execute_query(query, (
                 user.user_id, 
                 user.user_name, 
                 user.user_mail, 
-                user.user_password,
-                user.companyid
+                hashed_password, # Store hash in legacy column
+                user.companyid,
+                user.role,
+                hashed_password  # Store hash in new column
             ), fetch=False)
             count += 1
             

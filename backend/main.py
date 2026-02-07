@@ -8,6 +8,7 @@ from routes.database_routes import router as database_router
 from routes.technician_routes import router as technician_router
 from routes.organization_routes import router as organization_router
 from routes.feedback_routes import router as feedback_router
+from routes.auth_routes import router as auth_router
 from routes.email_routes import router as email_router
 from src.config import Config
 from src.utils.database_startup import ensure_database_running, wait_for_database_ready
@@ -35,6 +36,7 @@ app.include_router(database_router, prefix="/api", tags=["database"])
 app.include_router(technician_router, prefix="/api", tags=["technician"])
 app.include_router(organization_router, prefix="/api", tags=["organizations"])
 app.include_router(feedback_router, prefix="/api", tags=["feedback"])
+app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(email_router, prefix="/api", tags=["email"])
 
 

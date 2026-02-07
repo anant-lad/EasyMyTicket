@@ -21,7 +21,7 @@ class PicklistLoader:
         if csv_path is None:
             # Default path relative to project root
             project_root = Path(__file__).parent.parent.parent
-            csv_path = project_root / "dataset" / "picklist_values (1).csv"
+            csv_path = project_root / "dataset" / "picklist_values.csv"
         
         self.csv_path = csv_path
         self.picklist_data: Dict[str, Dict[str, str]] = {}  # {field: {value: label}}

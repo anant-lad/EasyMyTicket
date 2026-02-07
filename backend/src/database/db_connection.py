@@ -402,6 +402,7 @@ class DatabaseConnection:
         priority: Optional[str] = None,
         issuetype: Optional[str] = None,
         user_id: Optional[str] = None,
+        companyid: Optional[str] = None,
         order_by: str = 'createdate',
         order_direction: str = 'DESC'
     ) -> Dict[str, Any]:
@@ -415,6 +416,7 @@ class DatabaseConnection:
             priority: Filter by priority (optional)
             issuetype: Filter by issue type (optional)
             user_id: Filter by user ID (optional)
+            companyid: Filter by company ID (optional)
             order_by: Column to order by (default: 'createdate')
             order_direction: Order direction 'ASC' or 'DESC' (default: 'DESC')
         
@@ -441,39 +443,53 @@ class DatabaseConnection:
             params = []
             
             if status:
-                where_conditions.append("status = %s")
+                where_conditions.append("nt.status = %s")
                 params.append(status)
             
             if priority:
-                where_conditions.append("priority = %s")
+                where_conditions.append("nt.priority = %s")
                 params.append(priority)
             
             if issuetype:
-                where_conditions.append("issuetype = %s")
+                where_conditions.append("nt.issuetype = %s")
                 params.append(issuetype)
             
             if user_id:
-                where_conditions.append("user_id = %s")
+                where_conditions.append("nt.user_id = %s")
                 params.append(user_id)
+            
+            if companyid:
+                where_conditions.append("nt.companyid = %s")
+                params.append(companyid)
             
             where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
             
             # Get total count
-            count_query = f"SELECT COUNT(*) FROM new_tickets WHERE {where_clause}"
+            count_query = f"SELECT COUNT(*) FROM new_tickets nt WHERE {where_clause}"
             with conn.cursor() as cur:
                 cur.execute(count_query, params)
                 total = cur.fetchone()[0]
             
-            # Get tickets with pagination
+            # Get tickets with pagination and assigned technician info
             query = f"""
                 SELECT 
-                    ticketnumber, title, description, user_id, createdate, 
-                    duedatetime, status, priority, issuetype, subissuetype,
-                    ticketcategory, tickettype, lastactivitydate, resolveddatetime,
-                    resolution, companyid, queueid, estimatedhours
-                FROM new_tickets
+                    nt.ticketnumber, nt.title, nt.description, nt.user_id, nt.createdate, 
+                    nt.duedatetime, nt.status, nt.priority, nt.issuetype, nt.subissuetype,
+                    nt.ticketcategory, nt.tickettype, nt.lastactivitydate, nt.resolveddatetime,
+                    nt.resolution, nt.companyid, nt.queueid, nt.estimatedhours,
+                    latest_assign.tech_id as assigned_tech_id,
+                    td.tech_name as assigned_tech_name
+                FROM new_tickets nt
+                LEFT JOIN LATERAL (
+                    SELECT tech_id 
+                    FROM ticket_assignments 
+                    WHERE ticket_number = nt.ticketnumber 
+                    ORDER BY assigned_at DESC 
+                    LIMIT 1
+                ) latest_assign ON true
+                LEFT JOIN technician_data td ON latest_assign.tech_id = td.tech_id
                 WHERE {where_clause}
-                ORDER BY {order_by} {order_direction}
+                ORDER BY nt.{order_by} {order_direction}
                 LIMIT %s OFFSET %s
             """
             
@@ -533,6 +549,30 @@ class DatabaseConnection:
                     self._create_tables(conn)
                     self._create_closed_tickets_table(conn)
                 else:
+                    # Check for tickets_context table
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'tickets_context'
+                        );
+                    """)
+                    if not cur.fetchone()[0]:
+                         print("tickets_context table not found. Creating it...")
+                         self._create_tables(conn) # Re-run create tables which now includes it
+                    
+                    # Check for ticket_assignments table
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'ticket_assignments'
+                        );
+                    """)
+                    if not cur.fetchone()[0]:
+                         print("ticket_assignments table not found. Creating it...")
+                         self._create_tables(conn)
+                         
                     # Check if closed_tickets table exists
                     cur.execute("""
                         SELECT EXISTS (
@@ -551,7 +591,7 @@ class DatabaseConnection:
                         cur.execute("""
                             SELECT EXISTS (
                                 SELECT FROM information_schema.tables 
-                                WHERE table_schema = 'public' 
+                                where table_schema = 'public' 
                                 AND table_name = 'chat_sessions'
                             );
                         """)
@@ -577,7 +617,7 @@ class DatabaseConnection:
         """Ensure all required columns exist in tables (migrations)"""
         try:
             with conn.cursor() as cur:
-                # Check if user_id column exists in new_tickets table
+                # 1. new_tickets: user_id
                 cur.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.columns 
@@ -586,34 +626,125 @@ class DatabaseConnection:
                         AND column_name = 'user_id'
                     );
                 """)
-                user_id_exists = cur.fetchone()[0]
-                
-                if not user_id_exists:
+                if not cur.fetchone()[0]:
                     print("user_id column not found in new_tickets table. Adding it...")
-                    cur.execute("""
-                        ALTER TABLE new_tickets 
-                        ADD COLUMN user_id VARCHAR(100);
+                    cur.execute("ALTER TABLE new_tickets ADD COLUMN user_id VARCHAR(100);")
+                
+                # 2. user_data: companyid, role, password_hash, status
+                columns_to_check = {
+                    'companyid': 'VARCHAR(100)',
+                    'role': "VARCHAR(50) DEFAULT 'user'",
+                    'password_hash': 'VARCHAR(255)',
+                    'status': "VARCHAR(20) DEFAULT 'active'"
+                }
+                for col, dtype in columns_to_check.items():
+                    cur.execute(f"""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.columns 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'user_data' 
+                            AND column_name = '{col}'
+                        );
                     """)
-                    conn.commit()
-                    print("✓ user_id column added to new_tickets table")
+                    if not cur.fetchone()[0]:
+                        print(f"{col} column not found in user_data table. Adding it...")
+                        cur.execute(f"ALTER TABLE user_data ADD COLUMN {col} {dtype};")
+
+                # 3. technician_data: companyid, role, status
+                tech_columns = {
+                    'companyid': 'VARCHAR(100)',
+                    'role': "VARCHAR(50) DEFAULT 'technician'",
+                    'status': "VARCHAR(20) DEFAULT 'active'",
+                    'password_hash': 'VARCHAR(255)'
+                }
+                for col, dtype in tech_columns.items():
+                    cur.execute(f"""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.columns 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'technician_data' 
+                            AND column_name = '{col}'
+                        );
+                    """)
+                    if not cur.fetchone()[0]:
+                         print(f"{col} column not found in technician_data table. Adding it...")
+                         cur.execute(f"ALTER TABLE technician_data ADD COLUMN {col} {dtype};")
+
+                # 4. organizations: status, subscription_plan
+                org_columns = {
+                    'status': "VARCHAR(20) DEFAULT 'active'",
+                    'subscription_plan': "VARCHAR(50) DEFAULT 'free'"
+                }
+                # First check if organizations table exists (it might not be in create_tables.sql yet)
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'organizations'
+                    );
+                """)
+                if cur.fetchone()[0]:
+                    for col, dtype in org_columns.items():
+                        cur.execute(f"""
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.columns 
+                                WHERE table_schema = 'public' 
+                                AND table_name = 'organizations' 
+                                AND column_name = '{col}'
+                            );
+                        """)
+                        if not cur.fetchone()[0]:
+                            print(f"{col} column not found in organizations table. Adding it...")
+                            cur.execute(f"ALTER TABLE organizations ADD COLUMN {col} {dtype};")
+
+                # 5. ticket_assignments: assignment_reason
+                # Check if ticket_assignments table exists first
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'ticket_assignments'
+                    );
+                """)
+                if cur.fetchone()[0]:
+                     cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.columns 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'ticket_assignments' 
+                            AND column_name = 'assignment_reason'
+                        );
+                    """)
+                     if not cur.fetchone()[0]:
+                        print("assignment_reason column not found in ticket_assignments table. Adding it...")
+                        cur.execute("ALTER TABLE ticket_assignments ADD COLUMN assignment_reason TEXT;")
+                     
+                     # Check for skill_match_score
+                     cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.columns 
+                            WHERE table_schema = 'public' 
+                            AND table_name = 'ticket_assignments' 
+                            AND column_name = 'skill_match_score'
+                        );
+                    """)
+                     if not cur.fetchone()[0]:
+                        print("skill_match_score column not found in ticket_assignments table. Adding it...")
+                        cur.execute("ALTER TABLE ticket_assignments ADD COLUMN skill_match_score FLOAT;")
+
+                conn.commit()
+                print("✓ Schema migration check complete")
         except Exception as e:
             print(f"Error ensuring columns exist: {e}")
             conn.rollback()
     
     def _create_tables(self, conn):
         """Create all required database tables"""
-        sql_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            'src', 'database', 'create_tables.sql'
-        )
+        # We ignore the external SQL file to ensure our internal definition is the source of truth
+        # sql_file = os.path.join(...) 
         
-        # If SQL file doesn't exist, create tables inline
-        if os.path.exists(sql_file):
-            with open(sql_file, 'r') as f:
-                sql_script = f.read()
-        else:
-            # Fallback: create tables inline
-            sql_script = """
+        # Use inline definition
+        sql_script = """
 -- Table 1: new_tickets
 CREATE TABLE IF NOT EXISTS new_tickets (
     id SERIAL PRIMARY KEY,
@@ -712,6 +843,37 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
     ticketnumber VARCHAR(100) UNIQUE,
     tickettype VARCHAR(100),
     title TEXT
+);
+
+-- Table 6: ticket_assignments
+CREATE TABLE IF NOT EXISTS ticket_assignments (
+    assignment_id SERIAL PRIMARY KEY,
+    ticket_number VARCHAR(100) NOT NULL,
+    tech_id VARCHAR(100) NOT NULL,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    assignment_reason TEXT,
+    skills_matched TEXT,
+    skill_match_score FLOAT, 
+    status VARCHAR(20) DEFAULT 'active'
+);
+
+-- Table 7: tickets_context
+CREATE TABLE IF NOT EXISTS tickets_context (
+    id SERIAL PRIMARY KEY,
+    ticket_number VARCHAR(100) NOT NULL,
+    title TEXT,
+    description TEXT,
+    extracted_text TEXT,
+    image_analysis JSONB,
+    table_data_parsed JSONB,
+    entities JSONB,
+    context_summary TEXT,
+    file_metadata JSONB,
+    resolved_at TIMESTAMP,
+    resolution_category VARCHAR(100),
+    assigned_technician_id VARCHAR(100),
+    human_feedback JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
             """
         
@@ -904,6 +1066,60 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
             }
         except Exception as e:
             print(f"Error getting organizations: {e}")
+            raise
+
+    def update_organization(self, companyid: str, update_data: Dict[str, Any]) -> bool:
+        """
+        Update organization details
+        """
+        conn = self.get_connection()
+        try:
+            allowed_fields = ['company_name', 'company_email', 'contact_phone', 'address', 'status', 'subscription_plan']
+            
+            fields = []
+            values = []
+            
+            for key, value in update_data.items():
+                if key in allowed_fields:
+                    fields.append(f"{key} = %s")
+                    values.append(value)
+            
+            if not fields:
+                return False
+                
+            values.append(companyid)
+            query = f"UPDATE organizations SET {', '.join(fields)} WHERE companyid = %s"
+            
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+                conn.commit()
+            return True
+        except Exception as e:
+             conn.rollback()
+             print(f"Error updating organization: {e}")
+             raise
+
+    def delete_organization(self, companyid: str) -> bool:
+        """
+        Delete organization and related data (SaaS cleanup)
+        """
+        conn = self.get_connection()
+        try:
+            # 1. Delete organization
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM organizations WHERE companyid = %s", (companyid,))
+                
+                # 2. Optional: Delete or deactivate users (depending on policy)
+                # For now, let's just mark them inactive to preserve history? 
+                # Or delete if it's a hard delete request. Let's do hard delete for now as requested.
+                cur.execute("DELETE FROM user_data WHERE companyid = %s", (companyid,))
+                cur.execute("DELETE FROM technician_data WHERE companyid = %s", (companyid,))
+                
+                conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"Error deleting organization: {e}")
             raise
     
     # ========== Ticket Update Methods ==========
@@ -1514,60 +1730,109 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
         """
         conn = self.get_connection()
         try:
-            # Find ticket in resolved_tickets or closed_tickets
+
+            # Find ticket in new_tickets, resolved_tickets or closed_tickets
             ticket = None
             source_table = None
             assigned_tech_id = None
             
-            for table in ['resolved_tickets', 'closed_tickets']:
-                query = f"SELECT * FROM {table} WHERE ticketnumber = %s"
-                result = self.execute_query(query, (ticket_number,))
-                if result:
-                    ticket = result[0]
-                    source_table = table
-                    # Try to get assigned_tech_id if column exists
-                    assigned_tech_id = ticket.get('assigned_tech_id')
-                    break
+            # Check new_tickets first (e.g. if just marked closed but not moved, or previously failed move)
+            query = "SELECT * FROM new_tickets WHERE ticketnumber = %s"
+            result = self.execute_query(query, (ticket_number,))
+            if result:
+                ticket = result[0]
+                source_table = "new_tickets"
+                assigned_tech_id = ticket.get('assigned_tech_id')
+            else:
+                for table in ['resolved_tickets', 'closed_tickets']:
+                    query = f"SELECT * FROM {table} WHERE ticketnumber = %s"
+                    result = self.execute_query(query, (ticket_number,))
+                    if result:
+                        ticket = result[0]
+                        source_table = table
+                        assigned_tech_id = ticket.get('assigned_tech_id')
+                        break
             
             if not ticket:
-                print(f"Ticket {ticket_number} not found in resolved or closed tickets")
+                print(f"Ticket {ticket_number} not found in new, resolved or closed tickets")
                 return False
             
-            # Move ticket back to new_tickets with status "TO DO"
-            ticket_dict = dict(ticket)
-            ticket_dict['status'] = 'TO DO'
-            ticket_dict['resolveddatetime'] = None
-            ticket_dict['completeddate'] = None
+            # Fallback: Get assigned_tech_id from ticket_assignments history if not in table
+            if not assigned_tech_id:
+                history_query = """
+                    SELECT tech_id FROM ticket_assignments 
+                    WHERE ticket_number = %s 
+                    ORDER BY assigned_at DESC LIMIT 1
+                """
+                history_res = self.execute_query(history_query, (ticket_number,))
+                if history_res:
+                    assigned_tech_id = history_res[0]['tech_id']
+
+            # If already in new_tickets, just update
+            if source_table == 'new_tickets':
+                print(f"Ticket {ticket_number} found in new_tickets. Updating status directly.")
+                update_query = """
+                    UPDATE new_tickets 
+                    SET status = 'Reopened', resolveddatetime = NULL, completeddate = NULL
+                    WHERE ticketnumber = %s
+                """
+                self.execute_query(update_query, (ticket_number,), fetch=False)
+            else:
+                # Move ticket back to new_tickets with status "Reopened"
+                ticket_dict = dict(ticket)
+                ticket_dict['status'] = 'Reopened'
+                ticket_dict['resolveddatetime'] = None
+                ticket_dict['completeddate'] = None
+                
+                # Do NOT add assigned_tech_id to ticket_dict as the column may not exist in new_tickets
+                # We manage assignment via ticket_assignments table
+                if 'assigned_tech_id' in ticket_dict:
+                    del ticket_dict['assigned_tech_id']
+                
+                # Delete from source table
+                delete_query = f"DELETE FROM {source_table} WHERE ticketnumber = %s"
+                self.execute_query(delete_query, (ticket_number,), fetch=False)
+                
+                # Insert into new_tickets
+                columns = [k for k in ticket_dict.keys() if ticket_dict[k] is not None and k != 'id']
+                values = [ticket_dict[k] for k in columns]
+                placeholders = ', '.join(['%s'] * len(columns))
+                
+                insert_query = f"""
+                    INSERT INTO new_tickets ({', '.join(columns)})
+                    VALUES ({placeholders})
+                """
+                
+                with conn.cursor() as cur:
+                    cur.execute(insert_query, values)
+                    conn.commit()
             
-            # Preserve assigned_tech_id for reassignment to same technician
+            # IMPORTANT: Reinstate the assignment record for visibility
             if assigned_tech_id:
-                ticket_dict['assigned_tech_id'] = assigned_tech_id
-            
-            # Delete from source table
-            delete_query = f"DELETE FROM {source_table} WHERE ticketnumber = %s"
-            self.execute_query(delete_query, (ticket_number,), fetch=False)
-            
-            # Insert into new_tickets
-            columns = [k for k in ticket_dict.keys() if ticket_dict[k] is not None and k != 'id']
-            values = [ticket_dict[k] for k in columns]
-            placeholders = ', '.join(['%s'] * len(columns))
-            
-            insert_query = f"""
-                INSERT INTO new_tickets ({', '.join(columns)})
-                VALUES ({placeholders})
-            """
-            
-            with conn.cursor() as cur:
-                cur.execute(insert_query, values)
-                conn.commit()
+                 assignment_data = {
+                    'ticket_number': ticket_number,
+                    'tech_id': assigned_tech_id,
+                    'assignment_reason': f"Reopened by user: {reason}",
+                    'status': 'active'
+                 }
+                 # We insert a new record to show it's active again
+                 self.execute_query(
+                    "INSERT INTO ticket_assignments (ticket_number, tech_id, assignment_reason, status) VALUES (%s, %s, %s, %s)",
+                    (ticket_number, assigned_tech_id, f"Reopened: {reason}", 'active'),
+                    fetch=False
+                 )
             
             # Update feedback record to mark as reopened
             update_feedback = """
                 UPDATE ticket_user_feedback
                 SET reopened = TRUE
-                WHERE ticket_number = %s AND user_id = %s
-                ORDER BY created_at DESC
-                LIMIT 1
+                WHERE feedback_id = (
+                    SELECT feedback_id
+                    FROM ticket_user_feedback
+                    WHERE ticket_number = %s AND user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
             """
             self.execute_query(update_feedback, (ticket_number, user_id), fetch=False)
             
@@ -1581,12 +1846,86 @@ CREATE TABLE IF NOT EXISTS closed_tickets (
             }
             self.insert_ticket_communication(system_message)
             
-            print(f"✅ Ticket {ticket_number} reopened and reassigned to {assigned_tech_id}")
+            print(f"✅ Ticket {ticket_number} reopened and set to 'Reopened' status")
             return True
             
         except Exception as e:
-            conn.rollback()
             print(f"Error reopening ticket: {e}")
+            self.conn.rollback()
+            return False
+
+    def accept_reopened_ticket(self, ticket_number: str) -> bool:
+        """
+        Technician accepts a reopened ticket, moving it to 'TO DO'
+        """
+        try:
+            # Update status in new_tickets
+            query = "UPDATE new_tickets SET status = 'TO DO' WHERE ticketnumber = %s"
+            self.execute_query(query, (ticket_number,), fetch=False)
+            
+            # Log communication
+            self.insert_ticket_communication({
+                'ticket_number': ticket_number,
+                'sender_type': 'system',
+                'sender_id': 'system',
+                'message_text': "Technician accepted reopen request. Ticket moved to TO DO.",
+                'message_type': 'status_update'
+            })
+            return True
+        except Exception as e:
+            print(f"Error accepting reopen: {e}")
+            return False
+
+    def reject_reopened_ticket(self, ticket_number: str, reason: str, tech_id: str) -> bool:
+        """
+        Technician rejects a reopened ticket, moving it back to 'Closed'
+        """
+        conn = self.get_connection()
+        try:
+            # Get ticket details
+            query = "SELECT * FROM new_tickets WHERE ticketnumber = %s"
+            result = self.execute_query(query, (ticket_number,))
+            if not result:
+                return False
+            
+            ticket = result[0]
+            ticket_dict = dict(ticket)
+            ticket_dict['status'] = 'Closed'
+            from datetime import datetime
+            ticket_dict['resolveddatetime'] = datetime.now()
+            
+            # Remove from new_tickets
+            self.execute_query("DELETE FROM new_tickets WHERE ticketnumber = %s", (ticket_number,), fetch=False)
+            
+            if 'id' in ticket_dict: del ticket_dict['id']
+            if 'assigned_tech_id' in ticket_dict: del ticket_dict['assigned_tech_id']
+            
+            columns = [k for k in ticket_dict.keys() if ticket_dict[k] is not None]
+            values = [ticket_dict[k] for k in columns]
+            placeholders = ', '.join(['%s'] * len(columns))
+            
+            insert_query = f"""
+                INSERT INTO closed_tickets ({', '.join(columns)})
+                VALUES ({placeholders})
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(insert_query, values)
+                conn.commit()
+            
+            # Log communication
+            self.insert_ticket_communication({
+                'ticket_number': ticket_number,
+                'sender_type': 'technician',
+                'sender_id': tech_id,
+                'message_text': f"Reopen request rejected. Reason: {reason}. Ticket Closed.",
+                'message_type': 'status_update'
+            })
+            
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"Error rejecting reopen: {e}")
             import traceback
             traceback.print_exc()
             return False

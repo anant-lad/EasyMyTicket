@@ -14,19 +14,20 @@ class SmartAssignmentAgent:
     def __init__(self, db_connection: DatabaseConnection):
         self.db_connection = db_connection
         
-        # Skill mapping from issue types (from analysis)
-        self.issue_type_skills = {
-            '11': ['Cloud', 'Email', 'Office 365', 'OneDrive', 'SharePoint', 'Cloud Workspace'],
-            '4': ['Hardware', 'Network', 'Assessment'],
-            '5': ['Software', 'Installation', 'SaaS'],
-            '6': ['Network', 'VPN', 'Remote Access'],
-            '7': ['Assessment', 'Network Analysis', 'Site Survey'],
-            '8': ['Server', 'Administration', 'Database'],
-            '9': ['Active Directory', 'File Permissions', 'Access Control'],
-            '13': ['Backup', 'DATTO', 'Azure', 'Backup Management'],
-            '14': ['Cybersecurity', 'Intrusion', 'Security'],
-            '15': ['Email', 'Security', 'Password'],
-            '18': ['Printer', 'Printing', 'Hardware'],
+        # Skill mapping from ticket categories (based on picklist_values.csv)
+        self.category_skills = {
+            '1': ['Hardware', 'Device', 'Repair', 'Printer'],        # Hardware
+            '2': ['Software', 'Installation', 'SaaS', 'Microsoft'],  # Software
+            '3': ['Network', 'Networking', 'VPN', 'Wifi', 'Internet'], # Network
+            '4': ['Database', 'SQL', 'Server', 'Data'],              # Database
+            '5': ['Security', 'Cybersecurity', 'Access', 'Permission'] # Security
+        }
+        
+        # Skill mapping from sub-issue types
+        self.sub_issue_skills = {
+            '6': ['VPN', 'Remote Access'],           # VPN
+            '7': ['Wifi', 'Network', 'Internet'],    # Wifi
+            '9': ['Installation', 'Setup'],          # Software Installation
         }
     
     def assign_ticket(self, ticket_data: Dict, classification: Dict) -> Optional[str]:
@@ -101,15 +102,25 @@ class SmartAssignmentAgent:
                 return val.get('Value') or val.get('value')
             return val
 
-        # Get skills from issuetype
-        issuetype = str(get_value('issuetype') or '')
-        if issuetype in self.issue_type_skills:
-            skills.extend(self.issue_type_skills[issuetype])
+        # 1. Get skills from Ticket Category
+        category = str(get_value('ticketcategory') or '')
+        if category in self.category_skills:
+            skills.extend(self.category_skills[category])
+            
+        # 2. Get skills from Sub-Issue Type
+        sub_issue = str(get_value('subissuetype') or '')
+        if sub_issue in self.sub_issue_skills:
+            skills.extend(self.sub_issue_skills[sub_issue])
         
-        # Add generic skills from priority
+        # 3. Add generic skills from priority
         priority = str(get_value('priority') or '')
-        if priority and priority.lower() in ['high', 'critical', 'urgent', '1']:
+        if priority and priority.lower() in ['high', 'critical', 'urgent', '1', '4']: # 1=High, 4=Critical
             skills.append('Urgent Support')
+            
+        # 4. Infer from Issue Type if needed (generic fallbacks)
+        issuetype = str(get_value('issuetype') or '')
+        if issuetype == '3': # Access Request
+            skills.extend(['Access', 'Permission', 'Security'])
         
         return list(set(skills))  # Remove duplicates
     

@@ -227,3 +227,72 @@ async def get_organization(companyid: str):
             status_code=500,
             detail=f'Internal server error: {str(e)}'
         )
+
+
+class OrganizationUpdateRequest(BaseModel):
+    """Request model for updating organization"""
+    company_name: Optional[str] = None
+    company_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    address: Optional[str] = None
+    status: Optional[str] = None
+    subscription_plan: Optional[str] = None
+
+
+@router.patch("/organizations/{companyid}")
+async def update_organization(companyid: str, update_request: OrganizationUpdateRequest):
+    """
+    Update organization details
+    """
+    try:
+        db_conn = get_db_connection()
+        
+        # Filter out None values
+        update_data = {k: v for k, v in update_request.dict().items() if v is not None}
+        
+        if not update_data:
+             raise HTTPException(status_code=400, detail="No fields provided for update")
+
+        success = db_conn.update_organization(companyid, update_data)
+        
+        if not success:
+             raise HTTPException(status_code=404, detail="Organization not found or update failed")
+             
+        # Fetch updated org
+        updated_org = db_conn.get_organization_by_companyid(companyid)
+         # Convert datetime objects
+        if updated_org:
+            for key, value in updated_org.items():
+                if isinstance(value, datetime):
+                    updated_org[key] = value.isoformat()
+                    
+        return {
+            "success": True, 
+            "message": "Organization updated successfully",
+            "organization": updated_org
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating organization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/organizations/{companyid}")
+async def delete_organization(companyid: str):
+    """
+    Delete organization and its users
+    """
+    try:
+        db_conn = get_db_connection()
+        success = db_conn.delete_organization(companyid)
+        
+        if not success:
+             raise HTTPException(status_code=404, detail="Organization not found")
+             
+        return {"success": True, "message": f"Organization {companyid} deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting organization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
