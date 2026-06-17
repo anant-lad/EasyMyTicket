@@ -1,0 +1,76 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-schema-v3
+  namespace: ticketing
+  labels:
+    app: db-schema-v3
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    spec:
+      serviceAccountName: ticketing-sa
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              pip install --quiet psycopg2-binary boto3
+              python - <<'PYEOF'
+              import boto3, os, psycopg2
+
+              s3 = boto3.client("s3", region_name=os.environ["AWS_REGION"])
+              print("Downloading schema patch from S3...")
+              s3.download_file(
+                  os.environ["S3_BUCKET"],
+                  "build/db_schema_v3_patch.sql",
+                  "/tmp/db_schema_v3_patch.sql"
+              )
+
+              with open("/tmp/db_schema_v3_patch.sql") as f:
+                  sql = f.read()
+
+              conn = psycopg2.connect(
+                  host=os.environ["DB_HOST"],
+                  port=int(os.environ.get("DB_PORT", 5432)),
+                  dbname=os.environ["DB_NAME"],
+                  user=os.environ["DB_USER"],
+                  password=os.environ["DB_PASSWORD"],
+                  sslmode="require",
+              )
+              conn.autocommit = True
+              with conn.cursor() as cur:
+                  cur.execute(sql)
+              conn.close()
+              print("Schema v3 patch applied successfully.")
+              PYEOF
+          env:
+            - name: DB_HOST
+              value: "ticketing-prod-postgres.cjq0y6uyg5xd.ap-south-1.rds.amazonaws.com"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "tickets_db"
+            - name: DB_USER
+              value: "ticketing_admin"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ticketing-secrets
+                  key: DB_PASSWORD
+            - name: S3_BUCKET
+              value: "ticketing-prod-datasets-808812816838"
+            - name: AWS_REGION
+              value: "ap-south-1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

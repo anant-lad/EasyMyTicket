@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticket-worker
+  namespace: ticketing
+  labels:
+    app: ticket-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticket-worker
+  template:
+    metadata:
+      labels:
+        app: ticket-worker
+    spec:
+      serviceAccountName: ticketing-sa
+      nodeSelector:
+        role: worker
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: embedding
+          effect: NoSchedule
+      containers:
+        - name: ticket-worker
+          image: 808812816838.dkr.ecr.ap-south-1.amazonaws.com/ticketing-api:latest
+          imagePullPolicy: Always
+          # Same image as API; different entrypoint runs the SQS consumer
+          command: ["python", "-m", "workers.notification_worker"]
+          envFrom:
+            - configMapRef:
+                name: ticketing-config
+            - secretRef:
+                name: ticketing-secrets
+          resources:
+            requests:
+              cpu: 256m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import time, os
+                  f = '/tmp/worker_heartbeat'
+                  assert os.path.exists(f), 'heartbeat file missing'
+                  age = time.time() - os.path.getmtime(f)
+                  assert age < 120, f'heartbeat stale ({age:.0f}s)'
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            failureThreshold: 3

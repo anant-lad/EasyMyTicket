@@ -1,14 +1,46 @@
+# Web framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+websockets>=12.0
+
+# Database
 psycopg2-binary==2.9.9
+
+# Data processing
 pandas==2.1.4
 openpyxl==3.1.2
-groq>=0.4.1
-httpx>=0.25.0
-python-dotenv==1.0.0
-requests==2.31.0
-pydantic==2.5.0
-sentence-transformers==2.2.2
 numpy==1.24.3
 scikit-learn==1.3.2
+
+# LLM providers (direct SDK — kept for legacy agent code)
+groq>=0.4.1
+fastembed>=0.4.0
+
+# LangChain ecosystem
+langchain-core>=0.3.0
+langchain-groq>=0.2.0
+langchain-openai>=0.2.0       # used for OpenRouter (OpenAI-compatible API)
+langgraph>=0.2.0
+langfuse>=2.0.0               # LLM observability / tracing
+
+# HTTP clients
+httpx>=0.25.0
+requests==2.31.0
+
+# Config + validation
+python-dotenv==1.0.0
+pydantic>=2.5.2,<3.0.0
+
+# AWS SDK (Secrets Manager, SQS, S3)
+boto3>=1.34.0
+botocore>=1.34.0
+
+# Redis cache
+redis>=5.0.0
+
+# Structured logging
+python-json-logger>=2.0.7
+
+# System diagnostics (used by desktop agent worker)
+psutil>=5.9.0
 

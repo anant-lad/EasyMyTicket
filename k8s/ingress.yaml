@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ticketing-ingress
+  namespace: ticketing
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # Subnets: deploy_phase_b_c.sh fills this in automatically via aws ec2 describe-subnets
+    # Tag public subnets with: kubernetes.io/role/elb=1
+    alb.ingress.kubernetes.io/subnets: subnet-007d33c18270cc2e1,subnet-02fe4a43708fcdd2f
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=120
+    # To enable HTTPS: uncomment the two lines below and fill in ACM cert ARN
+    # alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:808812816838:certificate/YOUR-CERT-ID"
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ticketing-api-svc
+                port:
+                  number: 80

@@ -1,12 +1,52 @@
 """
-Database startup utility
-Automatically starts the PostgreSQL database container if not running
+Database startup — TCP connectivity check only (no Docker management).
+Docker-based functions are retained as stubs for backward compatibility
+but are no-ops when DB_HOST points to RDS.
 """
+import socket
 import subprocess
 import time
 import os
+import logging
 from typing import Tuple, Optional
 from src.config import Config
+
+log = logging.getLogger(__name__)
+
+
+def wait_for_database_ready(host: str = None, port: int = None, max_retries: int = 10) -> bool:
+    """Poll until TCP connection to DB_HOST:DB_PORT succeeds."""
+    h = host or Config.DB_HOST
+    p = port or Config.DB_PORT
+    for attempt in range(1, max_retries + 1):
+        try:
+            with socket.create_connection((h, p), timeout=3):
+                log.info("Database reachable at %s:%s", h, p)
+                return True
+        except OSError as e:
+            log.debug("DB not ready (attempt %d/%d): %s", attempt, max_retries, e)
+            if attempt < max_retries:
+                time.sleep(2)
+    log.warning("Database at %s:%s not reachable after %d attempts", h, p, max_retries)
+    return False
+
+
+def ensure_database_running(container_name: str = "Autotask") -> Tuple[bool, str]:
+    """
+    For RDS deployments: just checks TCP reachability.
+    For local Docker (dev): falls through to legacy logic below.
+    """
+    if not is_local_db():
+        reachable = wait_for_database_ready(retries=3, delay=1.0) if False else wait_for_database_ready(max_retries=3)
+        return (True, "remote") if reachable else (False, f"Cannot reach {Config.DB_HOST}:{Config.DB_PORT}")
+    # Fall through to legacy Docker logic for local dev
+    return _ensure_docker_db(container_name)
+
+
+def _ensure_docker_db(container_name: str) -> Tuple[bool, str]:
+    """Legacy Docker-based startup — only used in local dev."""
+    if not is_local_db():
+        return True, "remote"
 
 
 def is_local_db() -> bool:

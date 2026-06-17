@@ -1,0 +1,143 @@
+name: Build, Test & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION:     ap-south-1
+  AWS_ACCOUNT_ID: 808812816838
+  EKS_CLUSTER:    ticketing-prod-cluster
+
+jobs:
+  # ── 1. Test ──────────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        env:
+          DB_HOST:       localhost
+          DB_PASSWORD:   test
+          GROQ_API_KEY:  test_key
+          DB_SSL_MODE:   disable
+          REDIS_ENABLED: "false"
+          SQS_ENABLED:   "false"
+        run: pytest tests/ -v --tb=short -x
+
+  # ── 2. Build & push API image ─────────────────────────────────────────────
+  build-api:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push ticketing-api
+        id: build
+        run: |
+          IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticketing-api:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          # Also tag as latest
+          docker tag "$IMAGE" \
+            "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticketing-api:latest"
+          docker push \
+            "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticketing-api:latest"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  # ── 3. Build & push worker image ─────────────────────────────────────────
+  build-worker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push ticket-worker
+        run: |
+          IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:${{ github.sha }}"
+          docker build -t "$IMAGE" \
+            --build-arg WORKER=true .
+          docker push "$IMAGE"
+          docker tag "$IMAGE" \
+            "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:latest"
+          docker push \
+            "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:latest"
+
+  # ── 4. Deploy to EKS ─────────────────────────────────────────────────────
+  deploy:
+    needs: [build-api, build-worker]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
+
+      - name: Apply K8s manifests (namespace, configmap, serviceaccount)
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/serviceaccount.yaml
+
+      - name: Roll out new API image
+        run: |
+          kubectl set image deployment/ticketing-api \
+            ticketing-api=${{ needs.build-api.outputs.image }} \
+            -n ticketing
+          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=5m
+
+      - name: Roll out new worker image
+        run: |
+          WORKER_IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:${{ github.sha }}"
+          kubectl set image deployment/ticket-worker \
+            ticket-worker="$WORKER_IMAGE" \
+            -n ticketing
+          kubectl rollout status deployment/ticket-worker -n ticketing --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ticketing
+          kubectl get ingress -n ticketing

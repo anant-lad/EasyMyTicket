@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kaniko-build
+  namespace: ticketing
+  labels:
+    app: kaniko-build
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    spec:
+      serviceAccountName: ticketing-sa   # IRSA → S3 read for source download
+      restartPolicy: Never
+      nodeSelector:
+        role: worker   # t3.large (8GB RAM) — needed for torch snapshot in Kaniko
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: embedding
+          effect: NoSchedule
+
+      initContainers:
+        - name: source-fetcher
+          image: python:3.11-slim
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              pip install --quiet boto3 && python - <<'PYEOF'
+              import boto3, os, tarfile
+              s3 = boto3.client("s3", region_name="ap-south-1")
+              print("Downloading source archive from S3...")
+              s3.download_file(
+                  "ticketing-prod-datasets-808812816838",
+                  "build/source.tar.gz",
+                  "/workspace/source.tar.gz"
+              )
+              print("Extracting...")
+              with tarfile.open("/workspace/source.tar.gz", "r:gz") as t:
+                  t.extractall("/workspace")
+              os.remove("/workspace/source.tar.gz")
+              files = os.listdir("/workspace")
+              print(f"Workspace ready: {len(files)} items — {files[:8]}")
+              PYEOF
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:latest
+          args:
+            - "--context=dir:///workspace"
+            - "--dockerfile=/workspace/Dockerfile"
+            - "--destination=808812816838.dkr.ecr.ap-south-1.amazonaws.com/ticketing-api:latest"
+            - "--snapshotMode=redo"      # use mtime-based snapshot — much faster for large layers
+            - "--compression=zstd"       # faster compression
+            - "--log-format=text"
+            - "--verbosity=info"
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+            limits:
+              memory: "7Gi"   # t3.large has 8GB; torch snapshot needs headroom
+              cpu: "2000m"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: docker-config
+              mountPath: /kaniko/.docker
+
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: docker-config
+          secret:
+            secretName: ecr-credentials
+            items:
+              - key: .dockerconfigjson
+                path: config.json

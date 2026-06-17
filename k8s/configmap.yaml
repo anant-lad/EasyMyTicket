@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ticketing-config
+  namespace: ticketing
+data:
+  # All non-secret configuration
+  # Replace placeholders with actual Terraform outputs
+  AWS_REGION: "ap-south-1"
+  DB_HOST: "ticketing-prod-postgres.cjq0y6uyg5xd.ap-south-1.rds.amazonaws.com"
+  DB_PORT: "5432"
+  DB_NAME: "tickets_db"
+  DB_USER: "ticketing_admin"
+  DB_SSL_MODE: "require"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "10"
+  REDIS_HOST: "ticketing-prod-redis-001.ticketing-prod-redis.gwrbyn.aps1.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  REDIS_SSL: "true"
+  REDIS_ENABLED: "true"
+  SQS_NOTIFICATION_URL: "https://sqs.ap-south-1.amazonaws.com/808812816838/ticketing-prod-notification-queue"
+  SQS_LLM_URL: "https://sqs.ap-south-1.amazonaws.com/808812816838/ticketing-prod-llm-queue"
+  SQS_ENABLED: "true"
+  SMTP_SERVER: "smtp.gmail.com"
+  SMTP_PORT: "465"
+  LLM_PROVIDER: "groq"
+  LLM_TEMPERATURE: "0.1"
+  LLM_MAX_TOKENS: "4096"
+  METADATA_EXTRACTION_MODEL: "llama-3.1-8b-instant"
+  CLASSIFICATION_MODEL: "llama-3.3-70b-versatile"
+  SIMILAR_TICKETS_LIMIT: "20"
+  SIMILARITY_THRESHOLD: "0.3"
+  SEMANTIC_SEARCH_BATCH_SIZE: "500"
+  ENVIRONMENT: "prod"
+  LOG_LEVEL: "INFO"
+  PORT: "8000"
+  HOST: "0.0.0.0"
+  SECRETS_MANAGER_PREFIX: "/ticketing/prod"
+  OBSERVABILITY_PROVIDER: "custom"
+  LANGFUSE_HOST: "https://cloud.langfuse.com"

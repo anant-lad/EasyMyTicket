@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap
+  namespace: ticketing
+  labels:
+    app: db-bootstrap
+spec:
+  ttlSecondsAfterFinished: 3600   # auto-delete pod 1hr after completion
+  backoffLimit: 1
+  template:
+    spec:
+      serviceAccountName: ticketing-sa   # IRSA → S3 read access, no AWS keys in spec
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "Installing Python deps..."
+              pip install --quiet psycopg2-binary pandas openpyxl boto3
+              echo "Downloading bootstrap script from S3..."
+              python - <<'PYEOF'
+              import boto3, os
+              s3 = boto3.client("s3", region_name=os.environ["AWS_REGION"])
+              s3.download_file(os.environ["S3_BUCKET"], "bootstrap/db_bootstrap.py", "/tmp/db_bootstrap.py")
+              PYEOF
+              echo "Running bootstrap..."
+              python /tmp/db_bootstrap.py
+          env:
+            - name: DB_HOST
+              value: "ticketing-prod-postgres.cjq0y6uyg5xd.ap-south-1.rds.amazonaws.com"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "tickets_db"
+            - name: DB_USER
+              value: "ticketing_admin"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ticketing-db-bootstrap
+                  key: password
+            - name: S3_BUCKET
+              value: "ticketing-prod-datasets-808812816838"
+            - name: AWS_REGION
+              value: "ap-south-1"
+            - name: BATCH_SIZE
+              value: "500"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "3Gi"   # pandas + Excel in memory can use ~1.5GB
+              cpu: "1000m"

@@ -28,13 +28,26 @@ class PicklistLoader:
         self.reverse_lookup: Dict[str, Dict[str, str]] = {}  # {field: {label: value}}
         self._load_picklist()
     
+    # Fallback picklist used when no CSV is present
+    _DEFAULTS: Dict[str, Dict[str, str]] = {
+        "issuetype": {"1": "Hardware", "2": "Software", "3": "Network", "4": "Security", "5": "Account/Access", "6": "Email/Collaboration", "7": "Cloud/Infrastructure", "8": "Backup/Recovery", "9": "Billing", "10": "General Inquiry"},
+        "subissuetype": {"1": "N/A"},
+        "ticketcategory": {"1": "Incident", "2": "Service Request", "3": "Change", "4": "Problem"},
+        "tickettype": {"1": "Break/Fix", "2": "New Request", "3": "How-To", "4": "Maintenance"},
+        "priority": {"1": "Critical", "2": "High", "3": "Medium", "4": "Low"},
+    }
+
     def _load_picklist(self):
-        """Load picklist data from CSV file"""
+        """Load picklist data from CSV file, falling back to built-in defaults."""
         if not os.path.exists(self.csv_path):
-            raise FileNotFoundError(
-                f"Picklist CSV file not found at: {self.csv_path}\n"
-                f"Please ensure the file exists or provide a valid path."
+            import logging
+            logging.getLogger(__name__).warning(
+                "Picklist CSV not found at %s — using built-in defaults", self.csv_path
             )
+            for field, values in self._DEFAULTS.items():
+                self.picklist_data[field] = dict(values)
+                self.reverse_lookup[field] = {v.lower(): k for k, v in values.items()}
+            return
         
         print(f"📋 Loading picklist data from: {self.csv_path}")
         

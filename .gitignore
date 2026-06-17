@@ -65,3 +65,14 @@ oauth_cilent/
 
 # postgres
 
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/*.tfvars.backup
+infra/terraform/crash.log
+infra/terraform/tfplan
+infra/terraform/.terraform.lock.hcl
+
+# Build artifacts
+/tmp/source.tar.gz

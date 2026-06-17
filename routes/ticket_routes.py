@@ -6,56 +6,19 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from src.database.db_connection import DatabaseConnection
-from src.agents.intake_classification import IntakeClassificationAgent
-from src.agents.resolution_generation import ResolutionGenerationAgent
-from src.agents.smart_ticket_assignment import SmartAssignmentAgent
-from src.agents.notification_agent import NotificationAgent
 from src.config import Config
 from src.utils.picklist_loader import get_picklist_loader
 
 router = APIRouter()
 
-# Lazy loading for database connection and agents
+# Lazy database connection (used by non-creation routes)
 _db_conn = None
-_intake_agent = None
-_resolution_agent = None
-_assignment_agent = None
-_notification_agent = None
 
 def get_db_connection():
-    """Get or create database connection (lazy loading)"""
     global _db_conn
     if _db_conn is None:
         _db_conn = DatabaseConnection()
     return _db_conn
-
-def get_intake_agent():
-    """Get or create intake agent (lazy loading)"""
-    global _intake_agent
-    if _intake_agent is None:
-        _intake_agent = IntakeClassificationAgent(get_db_connection())
-    return _intake_agent
-
-def get_resolution_agent():
-    """Get or create resolution generation agent (lazy loading)"""
-    global _resolution_agent
-    if _resolution_agent is None:
-        _resolution_agent = ResolutionGenerationAgent(get_db_connection())
-    return _resolution_agent
-
-def get_assignment_agent():
-    """Get or create smart assignment agent (lazy loading)"""
-    global _assignment_agent
-    if _assignment_agent is None:
-        _assignment_agent = SmartAssignmentAgent(get_db_connection())
-    return _assignment_agent
-
-def get_notification_agent():
-    """Get or create notification agent (lazy loading)"""
-    global _notification_agent
-    if _notification_agent is None:
-        _notification_agent = NotificationAgent()
-    return _notification_agent
 
 
 
@@ -134,274 +97,70 @@ class GenericResponse(BaseModel):
 
 
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
-async def create_ticket(ticket_request: TicketCreateRequest):
+async def create_ticket(
+    ticket_request: TicketCreateRequest,
+    device_id: Optional[str] = Query(None, description="Desktop agent device ID (enables auto-resolve routing)"),
+):
     """
-    Create a new ticket and process through agentic workflow
-    
-    This endpoint:
-    1. Extracts metadata from the ticket using LLM
-    2. Finds similar historical tickets
-    3. Classifies the ticket based on content and similar tickets
-    4. Generates resolution steps based on similar tickets
-    5. Stores the ticket in the database
-    
-    Returns:
-        TicketResponse with ticket details, metadata, classification, and resolution
+    Create a ticket and run the full LangGraph agentic pipeline:
+      extract metadata → classify → auto-route decision →
+        [agent auto-fix | technician assignment] → generate resolution → notify
     """
+    import asyncio
+    from src.graph.ticket_graph import process_ticket
+
     try:
-        # Generate ticket number immediately
-        ticket_number = f"T{datetime.now().strftime('%Y%m%d')}.{datetime.now().strftime('%H%M%S')}"
-        
-        # Prepare ticket data
-        ticket_data: Dict[str, Any] = {
-            'ticketnumber': ticket_number,
-            'title': ticket_request.title,
-            'description': ticket_request.description,
-            'user_id': ticket_request.user_id,
-            'createdate': datetime.now(),  # Auto-detect create datetime
-            'status': 'Open'
-        }
-        
-        # Add due_date_time if provided
+        # Validate due_date_time format before entering the graph
         if ticket_request.due_date_time:
             try:
-                ticket_data['duedatetime'] = datetime.strptime(
-                    ticket_request.due_date_time, 
-                    '%Y-%m-%d %H:%M:%S'
-                )
+                datetime.strptime(ticket_request.due_date_time, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 raise HTTPException(
                     status_code=400,
-                    detail='Invalid due_date_time format. Use: YYYY-MM-DD HH:MM:SS'
+                    detail="Invalid due_date_time format. Use: YYYY-MM-DD HH:MM:SS",
                 )
-        
-        # Get database connection and agent (lazy loading)
-        db_conn = get_db_connection()
-        intake_agent = get_intake_agent()
-        
-        # Step 1: Extract metadata using intake agent
-        print("\n" + "="*80)
-        print("🎫 TICKET CREATION REQUEST RECEIVED")
-        print("="*80)
-        print(f"📝 Title: {ticket_data['title']}")
-        print(f"👤 User ID: {ticket_data['user_id']}")
-        print(f"📅 Created: {ticket_data['createdate']}")
-        if ticket_data.get('duedatetime'):
-            print(f"⏰ Due: {ticket_data['duedatetime']}")
-        print("="*80)
-        print("\nStep 1: Extracting metadata...")
-        try:
-            extracted_metadata = intake_agent.extract_metadata(
-                title=ticket_data['title'],
-                description=ticket_data['description'],
-                model='llama3-8b'
-            )
-            
-            if not extracted_metadata:
-                print("ERROR: extract_metadata returned None")
-                raise HTTPException(
-                    status_code=500,
-                    detail='Failed to extract metadata from ticket. The LLM may have returned an invalid response or the API call failed. Check server logs for details.'
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"ERROR in extract_metadata: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(
-                status_code=500,
-                detail=f'Error extracting metadata: {str(e)}'
-            )
-        
-        # Step 2: Find similar tickets
-        print("\nStep 2: Finding similar tickets...")
-        similar_tickets = db_conn.find_similar_tickets(
-            title=ticket_data['title'],
-            description=ticket_data['description'],
-            limit=Config.SIMILAR_TICKETS_LIMIT
+
+        # Run the LangGraph pipeline (blocking call — offload to thread pool)
+        loop = asyncio.get_event_loop()
+        state = await loop.run_in_executor(
+            None,
+            lambda: process_ticket(
+                title=ticket_request.title,
+                description=ticket_request.description,
+                user_id=ticket_request.user_id,
+                source="portal",
+                device_id=device_id,
+                due_date_time=ticket_request.due_date_time,
+            ),
         )
-        
-        # Step 3: Classify ticket
-        print("\nStep 3: Classifying ticket...")
-        classification = intake_agent.classify_ticket(
-            new_ticket_data=ticket_data,
-            extracted_metadata=extracted_metadata,
-            similar_tickets=similar_tickets,
-            model=Config.CLASSIFICATION_MODEL
-        )
-        
-        if not classification:
-            raise HTTPException(
-                status_code=500,
-                detail='Failed to classify ticket'
-            )
-        
-        # Step 4: Merge classification data into ticket_data with normalization
-        # Extract values from classification and normalize using picklist
-        picklist_loader = get_picklist_loader()
-        
-        # Helper function to normalize and extract value
-        def normalize_field(field_key: str, db_field: str, default_value: str = None):
-            value = classification.get(field_key)
-            if isinstance(value, dict):
-                raw_value = value.get('Value') or value.get('value')
-            else:
-                raw_value = value
-            
-            if raw_value:
-                # Normalize the value using picklist
-                normalized = picklist_loader.normalize_value(db_field, str(raw_value))
-                if normalized:
-                    ticket_data[db_field] = normalized
-                else:
-                    # If normalization fails, use raw value as fallback
-                    ticket_data[db_field] = str(raw_value)
-            elif default_value:
-                ticket_data[db_field] = default_value
-        
-        # Normalize and set each field
-        normalize_field('ISSUETYPE', 'issuetype')
-        normalize_field('SUBISSUETYPE', 'subissuetype')
-        normalize_field('TICKETCATEGORY', 'ticketcategory')
-        normalize_field('TICKETTYPE', 'tickettype')
-        normalize_field('PRIORITY', 'priority')
-        normalize_field('STATUS', 'status', '1')  # Default to "New" status (value 1)
-        
 
-        # If status wasn't set, use default
-        if 'status' not in ticket_data or not ticket_data['status']:
-            status_value = picklist_loader.get_value('status', 'New')
-            ticket_data['status'] = status_value or '1'
+        if state.get("ticket_number") == "FAILED":
+            raise HTTPException(status_code=500, detail="Ticket pipeline failed — check server logs")
 
-        # Step 5: Generate resolution steps
-        print("\nStep 5: Generating resolution steps...")
-        resolution_agent = get_resolution_agent()
-        generated_resolution = None
-
-        try:
-            generated_resolution = resolution_agent.generate_resolution(
-                ticket_data=ticket_data,
-                extracted_metadata=extracted_metadata,
-                similar_tickets=similar_tickets,
-                model=Config.CLASSIFICATION_MODEL  # Use same model for consistency
-            )
-
-            if generated_resolution:
-                ticket_data['resolution'] = generated_resolution
-                print(f"✅ Resolution generated and added to ticket data")
-            else:
-                print("⚠️  Resolution generation returned None, continuing without resolution")
-        except Exception as e:
-            print(f"⚠️  Error generating resolution: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            # Continue without resolution - don't fail the ticket creation
-
-        # Step 6: Smart Ticket Assignment
-        print("\nStep 6: Assigning technician...")
-        assignment_agent = get_assignment_agent()
-        assigned_tech_id = None
-
-        try:
-            assigned_tech_id = assignment_agent.assign_ticket(
-                ticket_data=ticket_data,
-                classification=classification
-            )
-
-            if assigned_tech_id:
-                ticket_data['assigned_tech_id'] = assigned_tech_id
-                print(f"✅ Ticket assigned to: {assigned_tech_id}")
-            else:
-                print("⚠️  No suitable technician found for assignment")
-        except Exception as e:
-            print(f"⚠️  Error in assignment agent: {str(e)}")
-            # Continue even if assignment fails
-
-        # Step 7: Insert ticket into database
-        print("\n" + "="*80)
-        print("💾 Step 7: Inserting ticket into database...")
-        print("="*80)
-        print(f"📊 Ticket data to insert:")
-        print(f"   - Title: {ticket_data['title']}")
-        print(f"   - User ID: {ticket_data['user_id']}")
-        print(f"   - Status: {ticket_data.get('status', 'N/A')}")
-        print(f"   - Issue Type: {ticket_data.get('issuetype', 'N/A')}")
-        print(f"   - Category: {ticket_data.get('ticketcategory', 'N/A')}")
-        print(f"   - Priority: {ticket_data.get('priority', 'N/A')}")
-        
-        ticket_number = db_conn.insert_ticket(ticket_data)
-        
-        if not ticket_number:
-            print("❌ Failed to insert ticket into database")
-            raise HTTPException(
-                status_code=500,
-                detail='Failed to insert ticket into database'
-            )
-        
-        print(f"✅ Ticket inserted successfully!")
-        print(f"🎫 Ticket Number: {ticket_number}")
-        print("="*80)
-        print("✅ TICKET CREATION COMPLETED SUCCESSFULLY")
-        print("="*80 + "\n")
-        
-        # Step 8: Send Notifications
-        try:
-            notification_agent = get_notification_agent()
-            
-            # Fetch User Details
-            user_query = "SELECT user_name, user_mail FROM user_data WHERE user_id = %s"
-            user_results = db_conn.execute_query(user_query, (ticket_data['user_id'],))
-            user_data = user_results[0] if user_results else {'user_name': 'User', 'user_mail': None}
-            
-            # Fetch Technician Details (if assigned)
-            tech_data = None
-            if assigned_tech_id:
-                tech_query = "SELECT tech_name, tech_mail FROM technician_data WHERE tech_id = %s"
-                tech_results = db_conn.execute_query(tech_query, (assigned_tech_id,))
-                if tech_results:
-                    tech_data = tech_results[0]
-                    # Notify Technician
-                    notification_agent.notify_technician(ticket_data, tech_data)
-            
-            # Notify User
-            if user_data.get('user_mail'):
-                notification_agent.notify_user(ticket_data, user_data, tech_data)
-                
-        except Exception as e:
-            print(f"⚠️ Notification failed: {e}")
-            # Don't fail the whole request if notifications fail
-        
-        # Prepare response
-        response = TicketResponse(
+        return TicketResponse(
             success=True,
-            ticket_number=ticket_number,
+            ticket_number=state["ticket_number"],
             ticket_data={
-                'title': ticket_data['title'],
-                'description': ticket_data['description'],
-                'user_id': ticket_data['user_id'],
-                'createdate': ticket_data['createdate'].isoformat() if isinstance(ticket_data['createdate'], datetime) else str(ticket_data['createdate']),
-                'duedatetime': ticket_data.get('duedatetime').isoformat() if ticket_data.get('duedatetime') and isinstance(ticket_data['duedatetime'], datetime) else None
+                "title": ticket_request.title,
+                "description": ticket_request.description,
+                "user_id": ticket_request.user_id,
+                "createdate": datetime.now().isoformat(),
+                "duedatetime": ticket_request.due_date_time,
+                "can_auto_resolve": state.get("can_auto_resolve", False),
+                "agent_connected": state.get("agent_connected", False),
+                "agent_task_id": state.get("agent_task_id"),
             },
-            extracted_metadata=extracted_metadata,
-            classification=classification,
-            similar_tickets_found=len(similar_tickets),
-            resolution=generated_resolution,
-            assigned_tech_id=assigned_tech_id
+            extracted_metadata=state.get("extracted_metadata", {}),
+            classification=state.get("classification", {}),
+            similar_tickets_found=len(state.get("similar_tickets", [])),
+            resolution=state.get("resolution"),
+            assigned_tech_id=state.get("assigned_tech_id"),
         )
-        
-        return response
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error creating ticket: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f'Internal server error: {str(e)}'
-        )
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 
 @router.get("/tickets", response_model=TicketsListResponse)
@@ -662,8 +421,8 @@ async def resolve_ticket(
         
         # 3. Decrement workload if a technician was assigned
         if tech_id:
-            assignment_agent = get_assignment_agent()
-            assignment_agent.decrement_workload(tech_id)
+            from src.agents.smart_ticket_assignment import SmartAssignmentAgent
+            SmartAssignmentAgent(db_conn).decrement_workload(tech_id)
             
             # Record unassignment in history
             history_query = "UPDATE ticket_assignments SET unassigned_at = NOW(), assignment_status = 'resolved' WHERE ticket_number = %s AND tech_id = %s AND assignment_status = 'assigned'"
