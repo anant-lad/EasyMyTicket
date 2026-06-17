@@ -1,27 +1,28 @@
-import requests
-import os
-import json
-from dotenv import load_dotenv
+"""Health endpoint tests — real app via TestClient."""
 
-load_dotenv()
-API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:5000')
 
-def test_health():
-    print("\n" + "="*50)
-    print("TEST: API Health & Connectivity")
-    print("="*50)
-    
-    response = requests.get(f"{API_BASE_URL}/api/health")
-    print(f"Status Code: {response.status_code}")
-    
-    data = response.json()
-    print("Full Response:")
-    print(json.dumps(data, indent=2))
-    
-    assert response.status_code == 200
-    assert data['status'] == 'healthy'
-    assert data['database'] == 'connected'
-    print("\n✅ Health Check Passed")
+def test_healthz(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json().get("status") == "alive"
 
-if __name__ == "__main__":
-    test_health()
+
+def test_readyz_with_db(client):
+    r = client.get("/readyz")
+    assert r.status_code == 200
+    assert r.json().get("status") == "ready"
+
+
+def test_auth_rejects_missing_key(client):
+    """Requests without X-API-Key must get 401, not 500."""
+    r = client.post("/api/tickets/create", json={"title": "test", "user_id": "u1"})
+    assert r.status_code == 401
+
+
+def test_auth_accepts_valid_key(client, api_key):
+    """A valid API key should not be rejected at the auth layer."""
+    if not api_key:
+        import pytest
+        pytest.skip("API_KEYS env var not set")
+    r = client.get("/healthz", headers={"X-API-Key": api_key})
+    assert r.status_code == 200

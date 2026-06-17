@@ -11,9 +11,39 @@ env:
   EKS_CLUSTER:    ticketing-prod-cluster
 
 jobs:
-  # ── 1. Test ──────────────────────────────────────────────────────────────────
+  # ── 1. Test (real PostgreSQL service container) ───────────────────────────
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER:     ticketing_admin
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB:       tickets_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticketing_admin -d tickets_db"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DB_HOST:       localhost
+      DB_PORT:       "5432"
+      DB_NAME:       tickets_db
+      DB_USER:       ticketing_admin
+      DB_PASSWORD:   test
+      DB_SSL_MODE:   disable
+      REDIS_ENABLED: "false"
+      SQS_ENABLED:   "false"
+      GROQ_API_KEY:  test_key
+      API_KEYS:      ci-test-key-00000000000000000000000000000000000000000000000000
+      ENVIRONMENT:   test
+      LOG_LEVEL:     WARNING
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,16 +53,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: Apply DB schema
+        run: |
+          psql postgresql://ticketing_admin:test@localhost:5432/tickets_db \
+            -f src/database/create_tables_v2.sql
+          psql postgresql://ticketing_admin:test@localhost:5432/tickets_db \
+            -f scripts/db_schema_v3_patch.sql
 
       - name: Run tests
-        env:
-          DB_HOST:       localhost
-          DB_PASSWORD:   test
-          GROQ_API_KEY:  test_key
-          DB_SSL_MODE:   disable
-          REDIS_ENABLED: "false"
-          SQS_ENABLED:   "false"
         run: pytest tests/ -v --tb=short -x
 
   # ── 2. Build & push API image ─────────────────────────────────────────────
@@ -60,7 +90,6 @@ jobs:
           IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticketing-api:${{ github.sha }}"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          # Also tag as latest
           docker tag "$IMAGE" \
             "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticketing-api:latest"
           docker push \
@@ -87,8 +116,7 @@ jobs:
       - name: Build and push ticket-worker
         run: |
           IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:${{ github.sha }}"
-          docker build -t "$IMAGE" \
-            --build-arg WORKER=true .
+          docker build -t "$IMAGE" --build-arg WORKER=true .
           docker push "$IMAGE"
           docker tag "$IMAGE" \
             "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/ticket-worker:latest"

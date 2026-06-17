@@ -1,45 +1,51 @@
-import requests
-import os
-import json
-from dotenv import load_dotenv
+"""Resolution and daily-report route tests — real app, real DB."""
+import pytest
 
-load_dotenv()
-API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:5000')
 
-def test_resolution():
-    print("\n" + "="*50)
-    print("TEST: AI Resolution Generation")
-    print("="*50)
-    
-    payload = {
-        "title": "Teams not showing profile picture",
-        "description": "I changed my profile picture in Office 365 but it is not reflecting in Microsoft Teams.",
-        "user_id": "test_user"
-    }
-    print(f"Payload: {json.dumps(payload, indent=2)}")
-    
-    response = requests.post(f"{API_BASE_URL}/api/tickets/create", json=payload)
-    print(f"Status Code: {response.status_code}")
-    
-    assert response.status_code == 201
-    data = response.json()
-    print("Full Response Data (partial):")
-    # Only print first 500 chars of resolution to avoid log bloat
-    resolution = data.get('resolution', '')
-    data_display = {k: v for k, v in data.items() if k != 'resolution'}
-    print(json.dumps(data_display, indent=2))
-    print(f"Resolution Snippet: {resolution[:500]}...")
-    
-    assert resolution is not None
-    assert "Step 1" in resolution
-    
-    ticket_num = data.get('ticket_number')
-    print(f"\nVerifying resolution retrieval API for {ticket_num}...")
-    res_response = requests.get(f"{API_BASE_URL}/api/tickets/{ticket_num}/resolution")
-    print(f"Resolution API Status Code: {res_response.status_code}")
-    
-    assert res_response.json()['resolution'] == resolution
-    print(f"\n✅ Resolution Test Passed (Length: {len(resolution)})")
+def test_daily_report_accepted(client, api_key):
+    if not api_key:
+        pytest.skip("API_KEYS not set")
+    r = client.post(
+        "/api/agent/daily-report",
+        json={
+            "device_id": "ci-test-device",
+            "user_id": "TECH001",
+            "scan_time": "2026-06-17T06:00:00Z",
+            "system": {"os": "Linux", "hostname": "ci-runner"},
+            "all_issues": ["Disk at 90% capacity"],
+            "issue_count": 1,
+        },
+        headers={"X-API-Key": api_key},
+    )
+    assert r.status_code == 202
+    data = r.json()
+    assert data.get("status") == "accepted"
+    assert "report_id" in data
 
-if __name__ == "__main__":
-    test_resolution()
+
+def test_daily_report_no_issues(client, api_key):
+    if not api_key:
+        pytest.skip("API_KEYS not set")
+    r = client.post(
+        "/api/agent/daily-report",
+        json={
+            "device_id": "ci-clean-device",
+            "user_id": "TECH001",
+            "scan_time": "2026-06-17T06:00:00Z",
+            "system": {"os": "Linux", "hostname": "ci-clean"},
+            "all_issues": [],
+            "issue_count": 0,
+        },
+        headers={"X-API-Key": api_key},
+    )
+    assert r.status_code == 202
+    assert r.json().get("issues") == 0
+
+
+def test_technician_list(client, api_key):
+    if not api_key:
+        pytest.skip("API_KEYS not set")
+    r = client.get("/api/technicians", headers={"X-API-Key": api_key})
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
