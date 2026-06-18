@@ -195,14 +195,15 @@ async def _create_ticket_for_issue(
     try:
         db.execute_query(
             """INSERT INTO new_tickets
-               (ticketnumber, title, description, user_id, status, priority,
+               (ticketnumber, title, description, user_id, device_id, status, priority,
                 issuetype, source, createdate)
-               VALUES (%s, %s, %s, %s, 'Open', %s, %s, 'agent', NOW())""",
+               VALUES (%s, %s, %s, %s, %s, 'Open', %s, %s, 'agent', NOW())""",
             (
                 ticket_number,
                 f"[AUTO] {issue['title']}",
                 issue.get("description", ""),
                 user_id,
+                device_id,
                 priority_map.get(issue.get("priority", "medium"), "Medium"),
                 issue.get("category", "general_inquiry"),
             ),

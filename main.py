@@ -17,6 +17,7 @@ from routes.technician_routes import router as technician_router
 from routes.agent_routes import router as agent_router
 from routes.trace_routes import router as trace_router
 from routes.monitoring_routes import router as monitoring_router
+from routes.chat_routes import router as chat_router
 
 # Logging must be configured before any other module logs
 setup_logging()
@@ -47,6 +48,7 @@ app.include_router(technician_router, prefix="/api", tags=["technician"])
 app.include_router(agent_router,      tags=["agent"])
 app.include_router(trace_router,      prefix="/api", tags=["observability"])
 app.include_router(monitoring_router, tags=["monitoring"])
+app.include_router(chat_router,       tags=["chat"])
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +59,10 @@ async def startup_event():
         log.info("Configuration validated")
     except ValueError as e:
         log.warning("Configuration warning: %s", e)
+
+    # Apply idempotent schema migrations (E1-E5 new tables/columns)
+    from src.database.migrations import run_migrations
+    run_migrations()
 
     from src.utils.database_startup import wait_for_database_ready
     log.info("Waiting for database at %s:%s ...", Config.DB_HOST, Config.DB_PORT)

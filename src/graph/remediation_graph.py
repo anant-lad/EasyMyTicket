@@ -334,6 +334,26 @@ async def run_remediation_session(
                 is_fix  = command in __import__("agent.executor", fromlist=["TIER2"]).TIER2
                 if is_fix:
                     fix_attempts += 1
+                    # E3: gate Tier-2 commands behind technician approval
+                    from routes.agent_routes import request_tier2_approval
+                    approved = await request_tier2_approval(
+                        session_id=session_id,
+                        command=command,
+                        reasoning=reasoning,
+                        timeout=300,
+                    )
+                    if not approved:
+                        escalation = (
+                            f"Technician did not approve Tier-2 command '{command}'. "
+                            "Session escalated for manual intervention."
+                        )
+                        _save_step(db, session_id, step_count, "reasoning",
+                                   llm_reasoning=f"Approval denied for {command}")
+                        messages.append(ToolMessage(
+                            content="Approval denied — session escalated.", tool_call_id=tc_id
+                        ))
+                        step_count = MAX_STEPS
+                        break
 
                 _save_step(db, session_id, step_count, "command",
                            command=command, args=args, llm_reasoning=reasoning)
@@ -447,6 +467,28 @@ async def run_remediation_session(
     log.info("Session %s %s after %d steps: %s",
              session_id[:8], final_status, step_count,
              explanation[:100] if explanation else "(none)")
+
+    # E2: notify user and technician on session completion
+    try:
+        from src.agents.notification_agent import NotificationAgent
+        ticket_rows = db.execute_query(
+            "SELECT assigned_tech_id, issuetype, priority FROM new_tickets WHERE ticketnumber=%s",
+            (ticket_number,),
+        )
+        ticket_meta = ticket_rows[0] if ticket_rows else {}
+        NotificationAgent().send_ticket_notification(
+            ticket_number=ticket_number,
+            title=title,
+            priority=ticket_meta.get("priority", "Medium"),
+            category=ticket_meta.get("issuetype", category),
+            resolution=explanation,
+            assigned_tech_id=ticket_meta.get("assigned_tech_id"),
+            user_id=user_id,
+            auto_resolved=resolved,
+            agent_dispatched=True,
+        )
+    except Exception as e:
+        log.warning("Could not send session-completion notification: %s", e)
 
     return {
         "session_id":  session_id,

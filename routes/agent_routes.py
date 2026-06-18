@@ -35,6 +35,9 @@ _connected_agents: Dict[str, WebSocket] = {}
 # {call_id: asyncio.Future}  — pending agentic tool calls awaiting device reply
 _pending_tool_calls: Dict[str, asyncio.Future] = {}
 
+# E3: {session_id: asyncio.Future} — pending tech approval for Tier-2 commands
+_pending_approvals: Dict[str, asyncio.Future] = {}
+
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
@@ -67,6 +70,8 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                          msg.get("device", {}).get("os", "?"),
                          msg.get("device", {}).get("hostname", "?"))
                 _update_device_last_seen(device_id, msg.get("device", {}))
+                # E1: kick off any tickets that were queued while offline
+                asyncio.create_task(_auto_start_pending_sessions(device_id))
 
             elif msg_type == "task_result":
                 # Legacy one-shot result
@@ -209,6 +214,103 @@ def list_agent_tasks(ticket_number: str):
 @router.get("/api/agents/connected", tags=["agent"])
 def list_connected_agents():
     return {"connected": list(_connected_agents.keys()), "count": len(_connected_agents)}
+
+
+# ── E1: Pending-Agent ticket pickup ──────────────────────────────────────────
+
+@router.get("/api/agent/pending-tickets", tags=["agent"])
+def get_pending_tickets(device_id: str):
+    """Return tickets with status='Pending Agent' assigned to this device."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        """SELECT ticketnumber, title, description, issuetype AS category,
+                  user_id, priority
+           FROM new_tickets
+           WHERE status = 'Pending Agent' AND device_id = %s
+           ORDER BY createdate ASC""",
+        (device_id,),
+    )
+    return {"tickets": rows or [], "count": len(rows or [])}
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool
+    reason:   str = ""
+
+
+@router.post("/api/agent/sessions/{session_id}/approve", tags=["agent"])
+async def approve_tier2(session_id: str, req: ApprovalRequest):
+    """E3: Technician approves or rejects a pending Tier-2 command."""
+    future = _pending_approvals.get(session_id)
+    if not future or future.done():
+        raise HTTPException(status_code=404, detail="No pending approval for this session")
+    future.set_result({"approved": req.approved, "reason": req.reason})
+    return {"status": "approved" if req.approved else "rejected"}
+
+
+@router.get("/api/agent/sessions/{session_id}/approval-status", tags=["agent"])
+def get_approval_status(session_id: str):
+    future = _pending_approvals.get(session_id)
+    if not future:
+        return {"pending": False}
+    return {"pending": not future.done()}
+
+
+async def request_tier2_approval(session_id: str, command: str, reasoning: str,
+                                  timeout: int = 300) -> bool:
+    """
+    E3: Suspend the agentic session until a technician approves/rejects the Tier-2 command.
+    Returns True (approved) or False (rejected/timeout).
+    """
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    _pending_approvals[session_id] = future
+    log.info("Approval required for Tier-2 command=%s session=%s", command, session_id[:8])
+
+    # Persist approval request to DB so dashboard can show it
+    try:
+        db = DatabaseConnection()
+        db.execute_query(
+            """UPDATE agent_sessions SET status='awaiting_approval',
+               approval_command=%s, approval_reasoning=%s
+               WHERE session_id=%s""",
+            (command, reasoning, session_id), fetch=False,
+        )
+    except Exception:
+        pass  # column may not exist yet; non-fatal
+
+    try:
+        result = await asyncio.wait_for(future, timeout=timeout)
+        return result.get("approved", False)
+    except asyncio.TimeoutError:
+        log.warning("Approval timed out for session %s — escalating", session_id[:8])
+        return False
+    finally:
+        _pending_approvals.pop(session_id, None)
+
+
+async def _auto_start_pending_sessions(device_id: str):
+    """Called when an agent reconnects — kick off remediation for queued tickets."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        "SELECT ticketnumber, title, description, issuetype, user_id, priority "
+        "FROM new_tickets WHERE status='Pending Agent' AND device_id=%s",
+        (device_id,),
+    )
+    if not rows:
+        return
+    from src.graph.remediation_graph import run_remediation_session
+    for row in rows:
+        log.info("Resuming pending-agent ticket %s for device %s",
+                 row["ticketnumber"], device_id)
+        asyncio.create_task(run_remediation_session(
+            ticket_number=row["ticketnumber"],
+            device_id=device_id,
+            title=row.get("title", ""),
+            description=row.get("description", ""),
+            category=row.get("issuetype", "general_inquiry"),
+            user_id=row.get("user_id", ""),
+        ))
 
 
 # ── Session status endpoints ──────────────────────────────────────────────────

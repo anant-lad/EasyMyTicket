@@ -1,0 +1,64 @@
+# ── Input rails: block off-topic questions ───────────────────────────────────
+
+define user ask off topic
+  "Can you write me a poem?"
+  "Tell me a joke"
+  "What's the weather like?"
+  "Help me with my homework"
+  "Write code for me unrelated to IT"
+
+define bot refuse off topic
+  "I'm an IT support assistant and can only help with technology and workplace IT issues.
+   Please ask me about your tickets, technical problems, or IT support needs."
+
+define flow check off topic
+  user ask off topic
+  bot refuse off topic
+  stop
+
+# ── Input rails: block credential sharing ─────────────────────────────────────
+
+define user share credentials
+  "My password is"
+  "The API key is"
+  "Here is my token:"
+  "login credentials:"
+
+define bot refuse credentials
+  "For security, please do not share passwords, API keys, or tokens in chat.
+   Contact your IT admin to reset credentials securely."
+
+define flow check credentials
+  user share credentials
+  bot refuse credentials
+  stop
+
+# ── Output rails: prevent hallucinated procedures ────────────────────────────
+
+define bot self check output
+  "Does the response contain factual IT procedures and avoid making up software versions,
+   command syntax, or product names that don't exist? Answer yes or no."
+
+# ── Allowed topics ────────────────────────────────────────────────────────────
+
+define user ask about ticket
+  "What is the status of my ticket?"
+  "Why is my ticket still open?"
+  "When will ticket {ticket_number} be resolved?"
+  "What happened with my issue?"
+
+define user ask it support
+  "My computer is slow"
+  "I can't connect to VPN"
+  "Printer not working"
+  "Email not loading"
+  "Can't access the network drive"
+  "My laptop won't turn on"
+
+define flow handle it support
+  user ask it support
+  $context = "User needs IT assistance"
+  bot provide it assistance
+
+define bot provide it assistance
+  "I'll help you troubleshoot that. Let me check your ticket history and provide guidance."

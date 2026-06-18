@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-schema-e1e5
+  namespace: ticketing
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ticketing-sa
+      containers:
+        - name: schema-patch
+          image: 808812816838.dkr.ecr.ap-south-1.amazonaws.com/ticketing-api:latest
+          imagePullPolicy: Always
+          command:
+            - python3
+            - -c
+            - |
+              import os, sys
+              import psycopg2
+
+              conn = psycopg2.connect(
+                host=os.environ['DB_HOST'],
+                port=int(os.environ.get('DB_PORT', 5432)),
+                database=os.environ['DB_NAME'],
+                user=os.environ['DB_USER'],
+                password=os.environ['DB_PASSWORD'],
+              )
+              conn.autocommit = True
+              cur = conn.cursor()
+
+              stmts = [
+                "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS device_id TEXT",
+                "CREATE INDEX IF NOT EXISTS idx_tickets_device ON new_tickets(device_id) WHERE device_id IS NOT NULL",
+                """CREATE TABLE IF NOT EXISTS ticket_feedback (
+                    id BIGSERIAL PRIMARY KEY,
+                    ticket_number TEXT NOT NULL REFERENCES new_tickets(ticketnumber),
+                    tech_id TEXT, rating SMALLINT CHECK (rating BETWEEN 1 AND 5),
+                    classification_correct BOOLEAN, resolution_helpful BOOLEAN,
+                    actual_issue_type TEXT, notes TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+                "CREATE INDEX IF NOT EXISTS idx_feedback_ticket ON ticket_feedback(ticket_number)",
+                """CREATE TABLE IF NOT EXISTS chat_sessions (
+                    session_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                    user_id TEXT NOT NULL, ticket_number TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_message TIMESTAMPTZ)""",
+                """CREATE TABLE IF NOT EXISTS chat_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES chat_sessions(session_id),
+                    role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+                "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, created_at)",
+              ]
+
+              for s in stmts:
+                cur.execute(s)
+                print("OK:", s[:70])
+
+              conn.close()
+              print("Schema E1-E5 patch applied successfully")
+          envFrom:
+            - configMapRef:
+                name: ticketing-config
+            - secretRef:
+                name: ticketing-secrets

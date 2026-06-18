@@ -24,7 +24,7 @@ langgraph>=0.2.0
 langfuse>=2.0.0               # LLM observability / tracing
 
 # HTTP clients
-httpx>=0.25.0
+httpx>=0.25.0,<0.28.0
 requests==2.31.0
 
 # Config + validation
@@ -43,4 +43,10 @@ python-json-logger>=2.0.7
 
 # System diagnostics (used by desktop agent worker)
 psutil>=5.9.0
+
+# Guardrails (E6)
+nemoguardrails>=0.9.0
+
+# Chat (E4)
+langchain>=0.3.0
 

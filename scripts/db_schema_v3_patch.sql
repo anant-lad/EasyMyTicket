@@ -57,6 +57,41 @@ CREATE TABLE IF NOT EXISTS session_steps (
 );
 CREATE INDEX IF NOT EXISTS idx_steps_session ON session_steps(session_id, step_number);
 
+-- ── device_id on new_tickets (for Pending-Agent ticket pickup) ───────────────
+ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS device_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_tickets_device ON new_tickets(device_id) WHERE device_id IS NOT NULL;
+
+-- ── ticket_feedback (E5 feedback loop) ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ticket_feedback (
+    id              BIGSERIAL   PRIMARY KEY,
+    ticket_number   TEXT        NOT NULL REFERENCES new_tickets(ticketnumber),
+    tech_id         TEXT,
+    rating          SMALLINT    CHECK (rating BETWEEN 1 AND 5),
+    classification_correct BOOLEAN,
+    resolution_helpful     BOOLEAN,
+    actual_issue_type TEXT,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_ticket ON ticket_feedback(ticket_number);
+
+-- ── chat_sessions and chat_messages (E4) ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id   TEXT        PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id      TEXT        NOT NULL,
+    ticket_number TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_message TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id           BIGSERIAL   PRIMARY KEY,
+    session_id   TEXT        NOT NULL REFERENCES chat_sessions(session_id),
+    role         TEXT        NOT NULL CHECK (role IN ('user','assistant','system')),
+    content      TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, created_at);
+
 -- ── Extend status constraint to include agent-managed statuses ────────────────
 ALTER TABLE new_tickets
   DROP CONSTRAINT IF EXISTS new_tickets_status_check,

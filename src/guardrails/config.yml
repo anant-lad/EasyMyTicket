@@ -1,0 +1,24 @@
+models:
+  - type: main
+    engine: groq
+    model: llama-3.3-70b-versatile
+
+rails:
+  input:
+    flows:
+      - self check input
+  output:
+    flows:
+      - self check output
+  config:
+    single_call:
+      enabled: false
+
+instructions:
+  - type: general
+    content: |
+      You are EasyMyTicket's IT support AI. You help users with technical issues,
+      ticket status, and IT troubleshooting. You do not discuss topics unrelated
+      to IT support, software, hardware, networking, or workplace technology.
+      Never suggest sharing passwords, tokens, or credentials.
+      Always give accurate, safe, and actionable IT guidance.

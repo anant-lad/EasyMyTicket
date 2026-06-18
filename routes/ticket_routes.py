@@ -437,3 +437,59 @@ async def resolve_ticket(
             status_code=500,
             detail=f"Error resolving ticket: {str(e)}"
         )
+
+
+# ── E5: Feedback Loop ─────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    tech_id:               Optional[str] = None
+    rating:                Optional[int] = None   # 1-5
+    classification_correct: Optional[bool] = None
+    resolution_helpful:    Optional[bool] = None
+    actual_issue_type:     Optional[str] = None
+    notes:                 Optional[str] = None
+
+
+@router.post("/api/tickets/{ticket_number}/feedback", tags=["tickets"])
+def submit_feedback(ticket_number: str, req: FeedbackRequest):
+    """E5: Technician/user submits feedback on classification accuracy and resolution quality."""
+    db = get_db_connection()
+
+    rows = db.execute_query(
+        "SELECT ticketnumber FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    if req.rating is not None and not (1 <= req.rating <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+
+    db.execute_query(
+        """INSERT INTO ticket_feedback
+           (ticket_number, tech_id, rating, classification_correct,
+            resolution_helpful, actual_issue_type, notes)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (ticket_number, req.tech_id, req.rating, req.classification_correct,
+         req.resolution_helpful, req.actual_issue_type, req.notes),
+        fetch=False,
+    )
+
+    # If classification was wrong, log for model improvement tracking
+    if req.classification_correct is False and req.actual_issue_type:
+        import logging
+        logging.getLogger(__name__).info(
+            "Misclassification reported: ticket=%s expected_type=%s",
+            ticket_number, req.actual_issue_type
+        )
+
+    return {"success": True, "message": "Feedback recorded. Thank you!"}
+
+
+@router.get("/api/tickets/{ticket_number}/feedback", tags=["tickets"])
+def get_feedback(ticket_number: str):
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT * FROM ticket_feedback WHERE ticket_number=%s ORDER BY created_at DESC",
+        (ticket_number,),
+    )
+    return {"ticket_number": ticket_number, "feedback": rows or []}
