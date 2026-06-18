@@ -57,7 +57,12 @@ def test_get_ticket_after_create(client, api_key):
     # Create
     r = client.post(
         "/api/tickets/create",
-        json={"title": "Email not working in Outlook", "user_id": "TECH001", "source": "email"},
+        json={
+            "title": "Email not working in Outlook",
+            "description": "Cannot send or receive emails through Outlook since this morning.",
+            "user_id": "TECH001",
+            "source": "email",
+        },
         headers={"X-API-Key": api_key},
     )
     assert r.status_code == 201
