@@ -20,17 +20,17 @@ _RULES: list = [
     },
     {
         "categories": {"network"},
-        "keywords": {"ping", "unreachable", "timeout", "gateway", "connectivity"},
-        "command_type": "ping_gateway",
-        "payload": {"host": "8.8.8.8"},
-        "description": "Run gateway ping diagnostic",
-    },
-    {
-        "categories": {"network"},
         "keywords": {"wifi", "wireless", "wi-fi", "wlan", "ssid"},
         "command_type": "wifi_diagnostics",
         "payload": {},
         "description": "Run Wi-Fi diagnostics",
+    },
+    {
+        "categories": {"network"},
+        "keywords": {"ping", "unreachable", "timeout", "gateway", "connectivity"},
+        "command_type": "ping_gateway",
+        "payload": {"host": "8.8.8.8"},
+        "description": "Run gateway ping diagnostic",
     },
 
     # ── Hardware / disk ───────────────────────────────────────────────────────
