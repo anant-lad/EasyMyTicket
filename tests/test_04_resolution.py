@@ -45,7 +45,7 @@ def test_daily_report_no_issues(client, api_key):
 def test_technician_list(client, api_key):
     if not api_key:
         pytest.skip("API_KEYS not set")
-    r = client.get("/api/technicians", headers={"X-API-Key": api_key})
+    r = client.get("/api/database/technicians", headers={"X-API-Key": api_key})
     assert r.status_code == 200
     data = r.json()
     assert isinstance(data, list)

@@ -158,7 +158,7 @@ class NotificationAgent:
         if user_id:
             try:
                 rows = db.execute_query(
-                    "SELECT email, full_name FROM user_data WHERE user_id = %s LIMIT 1",
+                    "SELECT user_mail AS email, user_name AS full_name FROM user_data WHERE user_id = %s LIMIT 1",
                     (user_id,),
                 )
                 if not rows:

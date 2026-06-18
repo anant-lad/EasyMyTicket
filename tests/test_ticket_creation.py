@@ -29,7 +29,7 @@ def test_full_ticket_lifecycle(client, api_key):
     # Retrieve
     r2 = client.get(f"/api/tickets/{ticket_number}", headers={"X-API-Key": api_key})
     assert r2.status_code == 200
-    ticket = r2.json()
+    ticket = r2.json()["ticket"]
     assert ticket["ticketnumber"] == ticket_number
     assert ticket.get("title") or ticket.get("description")
 

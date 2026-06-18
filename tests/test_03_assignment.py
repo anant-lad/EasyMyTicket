@@ -71,4 +71,4 @@ def test_get_ticket_after_create(client, api_key):
     # Retrieve
     r2 = client.get(f"/api/tickets/{ticket_number}", headers={"X-API-Key": api_key})
     assert r2.status_code == 200
-    assert r2.json()["ticketnumber"] == ticket_number
+    assert r2.json()["ticket"]["ticketnumber"] == ticket_number
