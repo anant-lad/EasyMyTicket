@@ -81,6 +81,80 @@ async def receive_daily_report(report: DailyReport, background_tasks: Background
     }
 
 
+@router.get("/api/dashboard/stats", tags=["monitoring"])
+def get_dashboard_stats():
+    """Summary stats for the technician dashboard."""
+    db = DatabaseConnection()
+    rows = db.execute_query("""
+        SELECT
+            COUNT(*) FILTER (WHERE status='Open')          AS open_count,
+            COUNT(*) FILTER (WHERE status='In Progress')   AS in_progress_count,
+            COUNT(*) FILTER (WHERE status='Pending Agent') AS pending_agent_count,
+            COUNT(*) FILTER (WHERE status='Resolved')      AS resolved_count,
+            COUNT(*) FILTER (WHERE createdate >= NOW() - INTERVAL '24 hours') AS created_today
+        FROM new_tickets
+    """)
+    ticket_stats = rows[0] if rows else {}
+
+    session_rows = db.execute_query("""
+        SELECT
+            COUNT(*) FILTER (WHERE status='running')           AS active_sessions,
+            COUNT(*) FILTER (WHERE status='awaiting_approval') AS awaiting_approval,
+            COUNT(*) FILTER (WHERE status='resolved' AND completed_at >= NOW() - INTERVAL '24 hours') AS resolved_today
+        FROM agent_sessions
+    """)
+    session_stats = session_rows[0] if session_rows else {}
+
+    agent_rows = db.execute_query("""
+        SELECT COUNT(DISTINCT device_id) AS total_devices,
+               COUNT(DISTINCT device_id) FILTER (WHERE last_seen >= NOW() - INTERVAL '5 minutes') AS online_devices
+        FROM new_tickets WHERE device_id IS NOT NULL
+    """)
+    # Use a simple device ping count from connected agents registry
+    from routes.agent_routes import _connected_agents
+    return {
+        "tickets": {
+            "open":           int(ticket_stats.get("open_count") or 0),
+            "in_progress":    int(ticket_stats.get("in_progress_count") or 0),
+            "pending_agent":  int(ticket_stats.get("pending_agent_count") or 0),
+            "resolved":       int(ticket_stats.get("resolved_count") or 0),
+            "created_today":  int(ticket_stats.get("created_today") or 0),
+        },
+        "sessions": {
+            "active":           int(session_stats.get("active_sessions") or 0),
+            "awaiting_approval": int(session_stats.get("awaiting_approval") or 0),
+            "resolved_today":   int(session_stats.get("resolved_today") or 0),
+        },
+        "agents": {
+            "connected": len(_connected_agents),
+        },
+    }
+
+
+@router.get("/api/agent/sessions", tags=["monitoring"])
+def list_sessions(status: str = None, limit: int = 20):
+    """List agentic sessions, optionally filtered by status."""
+    db = DatabaseConnection()
+    if status:
+        rows = db.execute_query(
+            """SELECT s.*, t.title, t.issuetype AS category
+               FROM agent_sessions s
+               LEFT JOIN new_tickets t ON t.ticketnumber = s.ticket_number
+               WHERE s.status = %s
+               ORDER BY s.created_at DESC LIMIT %s""",
+            (status, min(limit, 100)),
+        )
+    else:
+        rows = db.execute_query(
+            """SELECT s.*, t.title, t.issuetype AS category
+               FROM agent_sessions s
+               LEFT JOIN new_tickets t ON t.ticketnumber = s.ticket_number
+               ORDER BY s.created_at DESC LIMIT %s""",
+            (min(limit, 100),),
+        )
+    return {"sessions": rows or []}
+
+
 @router.get("/api/agent/daily-reports/{device_id}", tags=["monitoring"])
 def get_reports_for_device(device_id: str, limit: int = 7):
     """Retrieve recent daily reports for a device (for dashboard)."""
