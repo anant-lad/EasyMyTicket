@@ -43,13 +43,6 @@ _RULES: list = [
     },
     {
         "categories": {"hardware"},
-        "keywords": {"smart", "disk error", "bad sector", "hard drive", "hdd", "ssd"},
-        "command_type": "check_disk",
-        "payload": {},
-        "description": "Run SMART disk health check",
-    },
-    {
-        "categories": {"hardware"},
         "keywords": {"printer", "print", "spooler", "printing", "print queue"},
         "command_type": "restart_print_spooler",
         "payload": {},
