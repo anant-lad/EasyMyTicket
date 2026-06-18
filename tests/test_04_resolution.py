@@ -48,4 +48,4 @@ def test_technician_list(client, api_key):
     r = client.get("/api/database/technicians", headers={"X-API-Key": api_key})
     assert r.status_code == 200
     data = r.json()
-    assert isinstance(data, list)
+    assert isinstance(data.get("data", data), list)
