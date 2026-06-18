@@ -371,7 +371,7 @@ def generate_resolution_node(state: TicketState) -> Dict:
 
     similar_text = ""
     for i, t in enumerate(state.get("similar_tickets", [])[:3], 1):
-        similar_text += f"\n{i}. Problem: {t.get('title','')}\n   Resolution: {t.get('resolution','(none)')[:300]}\n"
+        similar_text += f"\n{i}. Problem: {t.get('title','')}\n   Resolution: {(t.get('resolution') or '(none)')[:300]}\n"
     if not similar_text:
         similar_text = "No similar tickets found."
 
