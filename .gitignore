@@ -76,3 +76,10 @@ infra/terraform/.terraform.lock.hcl
 
 # Build artifacts
 /tmp/source.tar.gz
+
+# Large dataset files (exceed GitHub 100MB limit)
+dataset_creation/raw/
+dataset_creation/processed/*.jsonl
+context/cleaned_ticket_data_enhanced.xlsx
+*.parquet
+*.xlsx

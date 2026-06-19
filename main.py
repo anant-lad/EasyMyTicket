@@ -56,7 +56,7 @@ app.include_router(chat_router,       tags=["chat"])
 async def startup_event():
     import asyncio
     import routes.agent_routes as _ar
-    _ar._main_loop = asyncio.get_event_loop()
+    _ar._main_loop = asyncio.get_running_loop()
 
     try:
         Config.validate()
@@ -127,5 +127,5 @@ if __name__ == "__main__":
         host=Config.HOST,
         port=Config.PORT,
         reload=Config.ENVIRONMENT == "development",
-        workers=1 if Config.ENVIRONMENT == "development" else 2,
+        workers=1,  # must stay 1: _connected_agents and _pending_approvals are in-process dicts
     )

@@ -81,13 +81,19 @@ echo "==> Device ID: $DEVICE_ID"
 echo "    (Share this with your IT admin to link tickets to this machine)"
 
 # ── Write config ──────────────────────────────────────────────────────────────
-cat > "$CACHE_DIR/config.ini" << CONF
+cat > "$CACHE_DIR/config.ini" << 'CONF_TEMPLATE'
 [agent]
-api_url = $AGENT_API_URL
-api_key = $AGENT_API_KEY
-user_id = $AGENT_USER_ID
-device_id = $DEVICE_ID
-CONF
+api_url = AGENT_API_URL_PLACEHOLDER
+api_key = AGENT_API_KEY_PLACEHOLDER
+user_id = AGENT_USER_ID_PLACEHOLDER
+device_id = DEVICE_ID_PLACEHOLDER
+CONF_TEMPLATE
+sed -i \
+    -e "s|AGENT_API_URL_PLACEHOLDER|${AGENT_API_URL}|" \
+    -e "s|AGENT_API_KEY_PLACEHOLDER|${AGENT_API_KEY}|" \
+    -e "s|AGENT_USER_ID_PLACEHOLDER|${AGENT_USER_ID}|" \
+    -e "s|DEVICE_ID_PLACEHOLDER|${DEVICE_ID}|" \
+    "$CACHE_DIR/config.ini"
 chmod 600 "$CACHE_DIR/config.ini"
 
 # ── systemd service: persistent WebSocket daemon ──────────────────────────────

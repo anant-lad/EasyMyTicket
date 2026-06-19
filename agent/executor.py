@@ -335,7 +335,8 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
         ["bash", "-c", "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 '__URL__'"],
         ["bash", "-c", "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 '__URL__'"],
         ["powershell", "-NoProfile", "-Command",
-         "try { $r=(Invoke-WebRequest '__URL__' -Method Head -TimeoutSec 10 -UseBasicParsing); "
+         "$url=\"__URL__\"; "
+         "try { $r=(Invoke-WebRequest $url -Method Head -TimeoutSec 10 -UseBasicParsing); "
          "$r.StatusCode } catch { $_.Exception.Response.StatusCode.value__ }"],
     ),
 
@@ -545,7 +546,11 @@ TIER2: Dict[str, Tuple[List, List, List]] = {
         ["bash", "-c",
          "case '__PATH__' in "
          "*.pkg) sudo installer -pkg '__PATH__' -target /;; "
-         "*.dmg) hdiutil attach '__PATH__' && echo 'Mounted — manual install may be required';; "
+         "*.dmg) MOUNT=$(hdiutil attach '__PATH__' | grep /Volumes | awk '{print $NF}') && "
+                "echo \"Mounted at $MOUNT\" && "
+                "APP=$(find \"$MOUNT\" -maxdepth 1 -name '*.app' 2>/dev/null | head -1) && "
+                "if [ -n \"$APP\" ]; then cp -r \"$APP\" /Applications/ && echo 'Installed to /Applications'; fi && "
+                "hdiutil detach \"$MOUNT\" -quiet && echo 'Unmounted';; "
          "*.sh)  sudo bash '__PATH__';; "
          "*) echo 'Unknown file type: __PATH__'; exit 1;; "
          "esac"],
