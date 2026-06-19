@@ -22,7 +22,6 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.graph.auto_resolve import check_auto_resolve
 from src.graph.state import TicketState
 from src.llm.provider import get_callbacks, get_llm, get_small_llm
 
@@ -221,28 +220,76 @@ def classify_node(state: TicketState) -> Dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Node 3 — auto_route_decision  (pure function — no I/O)
+#  Node 3 — auto_route_decision  (LLM-based, not keyword rules)
 # ─────────────────────────────────────────────────────────────────────────────
+
+_ROUTING_PROMPT = ChatPromptTemplate.from_messages([
+    SystemMessage(content=(
+        "You are an IT support routing engine. "
+        "Decide if this ticket can be resolved by running commands/scripts on the user's device. "
+        "Reply ONLY with valid JSON — no prose, no markdown."
+    )),
+    HumanMessage(content=(
+        "Ticket:\n"
+        "Title: {title}\n"
+        "Description: {description}\n"
+        "Category: {category}\n\n"
+        "Can a desktop automation agent resolve this by running shell commands, "
+        "system utilities, CLI tools, or scripts on the user's machine?\n\n"
+        "Agent CAN handle: camera/audio/display issues, disk cleanup, service restarts, "
+        "driver reloads, network diagnostics, permission fixes, software install/update, "
+        "performance issues, printer/Bluetooth problems — anything diagnosable or fixable via CLI.\n\n"
+        "Agent CANNOT handle: password resets (identity verification needed), "
+        "physical hardware damage, policy/procurement decisions, multi-system incidents "
+        "requiring human judgment, account access that needs admin approval.\n\n"
+        "Return:\n"
+        "{{\n"
+        '  "can_agent_solve": true or false,\n'
+        '  "confidence": 0.0 to 1.0,\n'
+        '  "reasoning": "one sentence",\n'
+        '  "suggested_first_command": "command name or null"\n'
+        "}}"
+    )),
+])
+
 
 def auto_route_decision_node(state: TicketState) -> Dict:
     """
-    Decide whether this ticket can be auto-resolved by the desktop agent.
-    Sets can_auto_resolve, auto_command_type, auto_command_payload.
+    LLM decides whether this ticket can be resolved by the desktop agent.
+    Replaces the old hardcoded keyword-matching rules in auto_resolve.py.
     """
-    can_resolve, cmd_type, cmd_payload, desc = check_auto_resolve(
-        category=state.get("category", "general_inquiry"),
-        title=state.get("title", ""),
-        description=state.get("description", ""),
-    )
+    callbacks = get_callbacks()
+    errors    = list(state.get("errors", []))
+    can_resolve = False
+    cmd_type    = None
 
-    if can_resolve:
-        log.info("Auto-resolve eligible: %s → %s (%s)", state["ticket_number"], cmd_type, desc)
+    try:
+        llm   = get_small_llm(callbacks)
+        chain = _ROUTING_PROMPT | llm
+        resp  = chain.invoke({
+            "title":       state.get("title", ""),
+            "description": state.get("description", ""),
+            "category":    state.get("category", "general_inquiry"),
+        })
+        result = _parse_json(resp.content) or {}
+        can_resolve = bool(result.get("can_agent_solve", False))
+        confidence  = float(result.get("confidence", 0.0))
+        reasoning   = result.get("reasoning", "")
+        cmd_type    = result.get("suggested_first_command") or None
+        log.info(
+            "LLM routing for %s: can_agent_solve=%s (%.0f%%) — %s",
+            state.get("ticket_number"), can_resolve, confidence * 100, reasoning,
+        )
+    except Exception as e:
+        log.warning("LLM routing failed, defaulting to human path: %s", e)
+        errors.append(f"routing_llm: {e}")
 
     return {
         "can_auto_resolve": can_resolve,
         "auto_command_type": cmd_type,
-        "auto_command_payload": cmd_payload or {},
+        "auto_command_payload": {},
         "agent_connected": False,
+        "errors": errors,
     }
 
 
