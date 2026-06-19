@@ -51,7 +51,12 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _route_after_decision(state: TicketState) -> str:
-    if state.get("can_auto_resolve") and state.get("device_id"):
+    device_id = state.get("device_id", "")
+    if device_id:
+        from routes.agent_routes import is_agent_connected
+        if is_agent_connected(device_id):
+            return "agent_task"
+    if state.get("can_auto_resolve") and device_id:
         return "agent_task"
     return "assign_tech"
 
