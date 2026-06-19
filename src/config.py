@@ -96,6 +96,7 @@ class Config:
 
     # ── API authentication ────────────────────────────────────────────────────
     API_KEYS_RAW = _env_or_secret("API_KEYS", f"{_SM_PREFIX}/api-keys", "keys")
+    JWT_SECRET   = os.getenv("JWT_SECRET", "changeme-set-a-strong-secret-in-production")
 
     @classmethod
     def get_valid_api_keys(cls) -> set:

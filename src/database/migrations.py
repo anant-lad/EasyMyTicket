@@ -57,6 +57,9 @@ _MIGRATIONS = [
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_message TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, created_at)",
 
+    # E7: auth — is_admin flag on technicians
+    "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+
     # E6: persistent device registry
     (
         "CREATE TABLE IF NOT EXISTS devices ("
@@ -83,5 +86,54 @@ def run_migrations():
             except Exception as e:
                 log.warning("Migration skipped (%s): %s", stmt[:60], e)
         log.info("Startup migrations complete (%d statements)", len(_MIGRATIONS))
+        _seed_auth_credentials(db)
     except Exception as e:
         log.error("Startup migrations failed: %s", e)
+
+
+def _seed_auth_credentials(db):
+    """
+    One-time seed: set real emails + bcrypt passwords for technicians and create initial users.
+    Only runs if tech_password IS NULL (idempotent — never overwrites existing passwords).
+    """
+    try:
+        from src.auth.password import hash_password
+
+        tech_seeds = [
+            ("TECH001", "anantlad66@gmail.com",   "EasyMT@Tech66",    False),
+            ("TECH002", "anantlad0628@gmail.com",  "EasyMT@Admin2024", True),
+            ("TECH003", "carol.davis@company.com", "EasyMT@Tech123",   False),
+            ("TECH004", "david.kim@company.com",   "EasyMT@Tech123",   False),
+            ("TECH005", "emma.wilson@company.com", "EasyMT@Tech123",   False),
+            ("TECH006", "frank.lee@company.com",   "EasyMT@Tech123",   False),
+            ("TECH007", "grace.patel@company.com", "EasyMT@Tech123",   False),
+            ("TECH008", "henry.chen@company.com",  "EasyMT@Tech123",   False),
+        ]
+        for tech_id, email, pwd, is_admin in tech_seeds:
+            rows = db.execute_query(
+                "SELECT tech_password FROM technician_data WHERE tech_id=%s LIMIT 1", (tech_id,)
+            )
+            if rows and rows[0]["tech_password"] is None:
+                db.execute_query(
+                    "UPDATE technician_data SET tech_mail=%s, tech_password=%s, is_admin=%s WHERE tech_id=%s",
+                    (email, hash_password(pwd), is_admin, tech_id), fetch=False,
+                )
+                log.info("Auth seed: set password for %s (%s)", tech_id, email)
+
+        user_seeds = [
+            ("USR001", "Anant SRTTC", "anant.221269@srttc.ai.in", "EasyMT@User221"),
+            ("USR002", "Anant Lad",   "ladanant09@gmail.com",      "EasyMT@User09"),
+        ]
+        for user_id, name, email, pwd in user_seeds:
+            existing = db.execute_query(
+                "SELECT user_id FROM user_data WHERE user_id=%s LIMIT 1", (user_id,)
+            )
+            if not existing:
+                db.execute_query(
+                    "INSERT INTO user_data (user_id, user_name, user_mail, user_password, no_tickets_raised, available)"
+                    " VALUES (%s,%s,%s,%s,0,TRUE)",
+                    (user_id, name, email, hash_password(pwd)), fetch=False,
+                )
+                log.info("Auth seed: created user %s (%s)", user_id, email)
+    except Exception as e:
+        log.warning("Auth credential seed skipped: %s", e)

@@ -19,6 +19,8 @@ from routes.agent_routes import router as agent_router
 from routes.trace_routes import router as trace_router
 from routes.monitoring_routes import router as monitoring_router
 from routes.chat_routes import router as chat_router
+from routes.auth_routes import router as auth_router
+from routes.admin_routes import router as admin_router
 
 # Logging must be configured before any other module logs
 setup_logging()
@@ -50,6 +52,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(ticket_router,     prefix="/api", tags=["tickets"])
 app.include_router(database_router,   prefix="/api", tags=["database"])
 app.include_router(technician_router, prefix="/api", tags=["technician"])
