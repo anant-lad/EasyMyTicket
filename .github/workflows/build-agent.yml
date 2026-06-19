@@ -1,0 +1,190 @@
+name: Build Agent Binaries
+
+on:
+  push:
+    paths:
+      - 'agent/**'
+      - '.github/workflows/build-agent.yml'
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.1)'
+        required: false
+        default: '1.0.0'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            binary: easymyticket-agent
+            archive: easymyticket-agent_linux_amd64.zip
+          - os: windows-latest
+            platform: windows
+            binary: easymyticket-agent.exe
+            archive: easymyticket-agent_windows_amd64.zip
+          - os: macos-latest
+            platform: macos
+            binary: easymyticket-agent
+            archive: easymyticket-agent_macos_arm64.zip
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.platform }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install websockets psutil httpx pyinstaller
+
+      - name: Build binary (Linux/macOS)
+        if: matrix.platform != 'windows'
+        working-directory: agent
+        run: |
+          pyinstaller build.spec \
+            --distpath ../dist/${{ matrix.platform }}/bin \
+            --workpath ../dist/${{ matrix.platform }}/build \
+            --clean --noconfirm
+
+      - name: Build binary (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: agent
+        shell: pwsh
+        run: |
+          pyinstaller build.spec `
+            --distpath ../dist/windows/bin `
+            --workpath ../dist/windows/build `
+            --clean --noconfirm
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p package
+          cp dist/linux/bin/easymyticket-agent package/
+          cp agent/installer/install_linux.sh package/
+          cat > package/agent.env.example << 'EOF'
+          AGENT_API_URL=ws://YOUR_BACKEND_HOST
+          AGENT_API_KEY=your-api-key-here
+          AGENT_MONITOR_USER_ID=your-email@company.com
+          EOF
+          cat > package/README.txt << 'EOF'
+          EasyMyTicket Agent — Linux
+          ===========================
+          Option 1 (systemd service, recommended):
+            sudo AGENT_API_URL=ws://<host> AGENT_API_KEY=<key> bash install_linux.sh
+
+          Option 2 (run directly):
+            export AGENT_API_URL=ws://<host>
+            export AGENT_API_KEY=<key>
+            export AGENT_MONITOR_USER_ID=your@email.com
+            ./easymyticket-agent
+          EOF
+          cd package && zip -r ../${{ matrix.archive }} .
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+          Copy-Item dist\windows\bin\easymyticket-agent.exe package\
+          Copy-Item agent\installer\install_windows.ps1 package\
+          @"
+          AGENT_API_URL=ws://YOUR_BACKEND_HOST
+          AGENT_API_KEY=your-api-key-here
+          AGENT_MONITOR_USER_ID=your-email@company.com
+          "@ | Out-File -FilePath package\agent.env.example -Encoding utf8
+          @"
+          EasyMyTicket Agent - Windows
+          =============================
+          Option 1 (Windows Service, recommended - run as Administrator):
+            powershell -ExecutionPolicy Bypass -File install_windows.ps1
+
+          Option 2 (run directly):
+            set AGENT_API_URL=ws://<host>
+            set AGENT_API_KEY=<key>
+            set AGENT_MONITOR_USER_ID=your@email.com
+            easymyticket-agent.exe
+          "@ | Out-File -FilePath package\README.txt -Encoding utf8
+          Compress-Archive -Path package\* -DestinationPath ${{ matrix.archive }} -Force
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p package
+          cp dist/macos/bin/easymyticket-agent package/
+          cp agent/installer/install_macos.sh package/
+          cat > package/agent.env.example << 'EOF'
+          AGENT_API_URL=ws://YOUR_BACKEND_HOST
+          AGENT_API_KEY=your-api-key-here
+          AGENT_MONITOR_USER_ID=your-email@company.com
+          EOF
+          cat > package/README.txt << 'EOF'
+          EasyMyTicket Agent — macOS
+          ===========================
+          Option 1 (LaunchDaemon, recommended - run as root):
+            sudo AGENT_API_URL=ws://<host> AGENT_API_KEY=<key> bash install_macos.sh
+
+          Option 2 (run directly):
+            export AGENT_API_URL=ws://<host>
+            export AGENT_API_KEY=<key>
+            export AGENT_MONITOR_USER_ID=your@email.com
+            ./easymyticket-agent
+          EOF
+          cd package && zip -r ../${{ matrix.archive }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-v${{ github.event.inputs.version || '1.0.0' }}
+          name: EasyMyTicket Agent v${{ github.event.inputs.version || '1.0.0' }}
+          body: |
+            ## EasyMyTicket Desktop Agent
+
+            Download the binary for your platform and follow the README inside.
+
+            | Platform | File |
+            |----------|------|
+            | Linux x64 | `easymyticket-agent_linux_amd64.zip` |
+            | Windows x64 | `easymyticket-agent_windows_amd64.zip` |
+            | macOS ARM64 | `easymyticket-agent_macos_arm64.zip` |
+
+            ### Quick start
+            Set these in `agent.env` before starting:
+            ```
+            AGENT_API_URL=ws://k8s-ticketin-ticketin-01fa7b7cd1-804304711.ap-south-1.elb.amazonaws.com
+            AGENT_API_KEY=<your-api-key>
+            AGENT_MONITOR_USER_ID=your-email@company.com
+            ```
+          files: artifacts/*
+          draft: false
+          prerelease: false

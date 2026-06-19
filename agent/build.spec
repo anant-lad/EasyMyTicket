@@ -8,12 +8,12 @@ from pathlib import Path
 block_cipher = None
 
 a = Analysis(
-    ['agent/main.py'],
+    ['main.py'],
     pathex=['.'],
     binaries=[],
     datas=[
         # Bundle the offline queue module data dir placeholder
-        ('agent', 'agent'),
+        ('.', 'agent'),
     ],
     hiddenimports=[
         'websockets',
