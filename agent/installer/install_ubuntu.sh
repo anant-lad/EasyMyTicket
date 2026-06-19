@@ -71,7 +71,7 @@ echo "==> Setting up Python virtualenv..."
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install --quiet \
-    websockets>=12.0 psutil>=5.9.0 httpx>=0.25.0 requests>=2.31.0
+    "websockets>=12.0" "psutil>=5.9.0" "httpx>=0.25.0" "requests>=2.31.0" "ddgs>=9.0.0"
 PYTHON_BIN="$INSTALL_DIR/.venv/bin/python"
 
 # ── Generate device ID ────────────────────────────────────────────────────────

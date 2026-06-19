@@ -598,67 +598,62 @@ PROTECTED_PATHS = {
 
 def _web_search(query: str, max_results: int = 6) -> Tuple[int, str, str]:
     """
-    Search the web using DuckDuckGo's JSON API (no API key required).
+    Search the web using the ddgs library (DuckDuckGo, no API key required).
+    Falls back to urllib-based search if ddgs is not available.
     Returns (exit_code, json_results, stderr).
     """
-    import urllib.request
-    import urllib.parse
-    import urllib.error
+    import json as _json
 
     if not query:
         return 1, "", "web_search requires a 'QUERY' argument"
 
-    url = "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1".format(
-        urllib.parse.quote_plus(query)
-    )
-    headers = {"User-Agent": "EasyMyTicket-Agent/1.0 (support automation)"}
-
     results = []
+
+    # Primary: ddgs library (pip install ddgs)
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            import json as _json
-            data = _json.loads(resp.read().decode())
-
-        # Instant answer
-        if data.get("AbstractText"):
-            results.append({
-                "type": "answer",
-                "title": data.get("Heading", ""),
-                "url": data.get("AbstractURL", ""),
-                "snippet": data["AbstractText"][:300],
-            })
-
-        # Related topics
-        for topic in data.get("RelatedTopics", [])[:max_results]:
-            if isinstance(topic, dict) and topic.get("FirstURL") and topic.get("Text"):
+        from ddgs import DDGS
+        with DDGS() as ddgs:
+            for hit in ddgs.text(query, max_results=max_results):
                 results.append({
-                    "type": "result",
-                    "title": topic.get("Text", "")[:80],
-                    "url": topic["FirstURL"],
-                    "snippet": topic.get("Text", "")[:200],
+                    "title":   hit.get("title", ""),
+                    "url":     hit.get("href", ""),
+                    "snippet": hit.get("body", "")[:300],
                 })
-
-        # If DuckDuckGo returns nothing useful, try the HTML lite endpoint
-        if not results:
-            url2 = "https://lite.duckduckgo.com/lite/?q={}".format(urllib.parse.quote_plus(query))
-            req2 = urllib.request.Request(url2, headers=headers)
-            with urllib.request.urlopen(req2, timeout=15) as resp2:
-                html = resp2.read().decode(errors="replace")
-            # Extract <a> hrefs and surrounding text via simple regex
-            import re
-            links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', html)
-            for href, text in links[:max_results]:
-                if "duckduckgo.com" not in href:
-                    results.append({"type": "result", "title": text.strip(), "url": href, "snippet": ""})
-
-    except urllib.error.URLError as e:
-        return 1, "", f"Web search failed (network): {e}"
+    except ImportError:
+        pass
     except Exception as e:
-        return 1, "", f"Web search failed: {e}"
+        log.warning("ddgs search failed: %s", e)
+
+    # Fallback: DuckDuckGo instant answer JSON API
+    if not results:
+        try:
+            import urllib.request, urllib.parse
+            url = "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1".format(
+                urllib.parse.quote_plus(query)
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read().decode())
+            if data.get("AbstractText"):
+                results.append({
+                    "title":   data.get("Heading", ""),
+                    "url":     data.get("AbstractURL", ""),
+                    "snippet": data["AbstractText"][:300],
+                })
+            for topic in data.get("RelatedTopics", [])[:max_results]:
+                if isinstance(topic, dict) and topic.get("FirstURL"):
+                    results.append({
+                        "title":   topic.get("Text", "")[:80],
+                        "url":     topic["FirstURL"],
+                        "snippet": topic.get("Text", "")[:200],
+                    })
+        except Exception as e:
+            log.warning("DDG API fallback failed: %s", e)
 
     if not results:
-        return 0, _json.dumps({"query": query, "results": [], "note": "No results found"}), ""
+        note = ("No results found. Install the ddgs package on the agent machine "
+                "(`pip install ddgs`) for better search results.")
+        return 0, _json.dumps({"query": query, "results": [], "note": note}), ""
 
     output = _json.dumps({"query": query, "result_count": len(results), "results": results}, indent=2)
     log.info("web_search(%r) → %d results", query, len(results))
