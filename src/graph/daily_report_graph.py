@@ -272,9 +272,14 @@ async def _send_morning_digest(
         from src.database.db_connection import DatabaseConnection
 
         db = DatabaseConnection()
+        # Try user_data first (regular users), then technician_data (tech accounts)
         user_rows = db.execute_query(
-            "SELECT tech_mail AS email FROM technician_data WHERE tech_id = %s LIMIT 1", (user_id,)
+            "SELECT email FROM user_data WHERE user_id = %s LIMIT 1", (user_id,)
         )
+        if not user_rows or not user_rows[0].get("email"):
+            user_rows = db.execute_query(
+                "SELECT tech_mail AS email FROM technician_data WHERE tech_id = %s LIMIT 1", (user_id,)
+            )
         if not user_rows or not user_rows[0].get("email"):
             log.debug("No email found for user_id=%s — skipping digest", user_id)
             return

@@ -25,7 +25,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from src.database.db_connection import DatabaseConnection
 from src.llm.provider import get_callbacks, get_llm
-from agent.executor import list_available_commands
+try:
+    from agent.executor import list_available_commands
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from agent.executor import list_available_commands
 
 log = logging.getLogger(__name__)
 
@@ -601,7 +606,8 @@ async def run_remediation_session(
             elif fn_name == "run_command":
                 command = fn_args.get("command", "")
                 args    = fn_args.get("args") or {}
-                is_fix  = command in __import__("agent.executor", fromlist=["TIER2"]).TIER2
+                from agent.executor import TIER2 as _TIER2
+                is_fix  = command in _TIER2
                 if is_fix and not auto_mode:
                     fix_attempts += 1
                     # E3: gate Tier-2 commands behind technician approval (standard mode only)

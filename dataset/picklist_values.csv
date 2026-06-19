@@ -1,0 +1,58 @@
+Field,Value,Label
+issuetype,4,Hardware & Equipment
+issuetype,5,Software & Applications
+issuetype,6,Network & Connectivity
+issuetype,7,Site Survey & Assessment
+issuetype,8,Server & Database
+issuetype,9,Active Directory & Access
+issuetype,10,General IT Support
+issuetype,11,Cloud & Office 365
+issuetype,12,Mobile Devices
+issuetype,13,Backup & Disaster Recovery
+issuetype,14,Cybersecurity
+issuetype,15,Email & Password
+issuetype,16,VoIP & Phone
+issuetype,17,End User Support
+issuetype,18,Printing & Peripherals
+issuetype,19,Project & Consulting
+issuetype,20,Compliance & Audit
+issuetype,21,Virtualization
+issuetype,22,Wireless & WiFi
+issuetype,23,Remote Access & VPN
+issuetype,24,Licensing
+issuetype,25,Training & Documentation
+issuetype,26,Other
+priority,1,Critical
+priority,2,High
+priority,3,Medium
+priority,4,Low
+priority,5,Planning
+status,1,Open
+status,5,Closed
+status,7,In Progress
+status,8,Pending
+status,15,Resolved
+status,16,Awaiting User
+status,17,On Hold
+status,19,Escalated
+status,28,Cancelled
+status,33,Closed
+status,39,Closed
+status,46,Closed
+status,49,Closed
+status,52,Closed
+status,53,Closed
+ticketcategory,2,Service Request
+ticketcategory,3,Incident
+ticketcategory,4,Problem
+ticketcategory,101,Maintenance
+ticketcategory,102,Change Request
+ticketcategory,103,Project
+ticketcategory,107,Monitoring Alert
+ticketcategory,108,Security Event
+ticketcategory,109,Compliance
+tickettype,1,Break/Fix
+tickettype,2,New Request
+tickettype,3,How-To
+tickettype,4,Maintenance
+tickettype,5,Proactive

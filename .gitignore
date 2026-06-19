@@ -49,6 +49,7 @@ Thumbs.db
 # Project specific
 dataset/*.csv
 !dataset/ticket_data_updated.csv
+!dataset/picklist_values.csv
 *.ipynb
 .agent/
 .gemini/
