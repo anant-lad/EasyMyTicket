@@ -148,6 +148,199 @@ def _build_tool_definitions() -> list:
 _TOOLS = _build_tool_definitions()
 
 
+def _build_auto_tool_definitions() -> list:
+    """Tool definitions for auto mode — full unrestricted system access."""
+    cmds = list_available_commands()
+    tier1_list = ", ".join(cmds["tier1_diagnostic"])
+    tier2_list = ", ".join(cmds["tier2_fix"])
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": (
+                    "Run a named diagnostic or fix command on the user's machine.\n"
+                    f"Tier-1 (read-only): {tier1_list}.\n"
+                    f"Tier-2 (fix): {tier2_list}.\n"
+                    "In auto mode all commands run immediately with no approval gate."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command":   {"type": "string", "description": "Command name."},
+                        "args":      {"type": "object", "description": "Substitution args."},
+                        "reasoning": {"type": "string", "description": "Why you are running this."},
+                    },
+                    "required": ["command", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": (
+                    "Run any shell command on the user's machine. "
+                    "Linux/macOS: bash. Windows: PowerShell. "
+                    "Use for anything not covered by named commands."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command":   {"type": "string", "description": "Full shell command to execute."},
+                        "reasoning": {"type": "string", "description": "Why this command is needed."},
+                    },
+                    "required": ["command", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read the full contents of any file on the user's machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path":      {"type": "string", "description": "Absolute path to the file."},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["path", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write (overwrite) a file on the user's machine. Creates parent dirs automatically.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path":      {"type": "string", "description": "Absolute path to write."},
+                        "content":   {"type": "string", "description": "Full file content."},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["path", "content", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_dir",
+                "description": "List files and directories at a path on the user's machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path":      {"type": "string", "description": "Directory path."},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["path", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "download",
+                "description": "Download a file from a URL to a path on the user's machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url":       {"type": "string", "description": "URL to download."},
+                        "path":      {"type": "string", "description": "Destination path on the machine."},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["url", "path", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for drivers, error messages, fix procedures, package names.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query":     {"type": "string", "description": "Search query."},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["query", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_script",
+                "description": "Execute a multi-line bash/PowerShell/Python script on the user's machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "script":      {"type": "string", "description": "Script content."},
+                        "script_type": {"type": "string", "enum": ["bash", "powershell", "python"]},
+                        "reasoning":   {"type": "string"},
+                    },
+                    "required": ["script", "script_type", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": "Mark the session complete when the issue is resolved or cannot be fixed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "resolved":          {"type": "boolean"},
+                        "explanation":       {"type": "string"},
+                        "escalation_reason": {"type": "string"},
+                    },
+                    "required": ["resolved", "explanation"],
+                },
+            },
+        },
+    ]
+
+
+_AUTO_TOOLS = _build_auto_tool_definitions()
+
+_AUTO_SYSTEM_PROMPT = """You are an expert IT support engineer with FULL autonomous access to the user's machine.
+The user has enabled AUTO MODE — you can run any command, read/write any file, download tools, and modify system config.
+Your goal: diagnose and completely fix the reported issue without any human approval.
+
+You have these tools:
+- shell(command)          — run any bash/PowerShell command
+- read_file(path)         — read any file
+- write_file(path,content)— write/create any file
+- list_dir(path)          — browse the filesystem
+- download(url, path)     — download files from the internet
+- web_search(query)       — search the web for fixes, drivers, packages
+- run_script(script, type)— run multi-line bash/PowerShell/Python scripts
+- run_command(command)    — use named diagnostic/fix commands
+
+Workflow:
+1. DIAGNOSE — gather evidence before acting (shell, read_file, named diagnostics)
+2. SEARCH   — web_search for the exact error or fix procedure if needed
+3. FIX      — apply the fix directly (no approval needed in auto mode)
+4. VERIFY   — confirm the fix worked with a follow-up check
+5. FINISH   — call finish() with a plain-English explanation
+
+Rules:
+- Prefer targeted fixes over broad ones (fix one service, not reinstall the OS)
+- Always verify before finishing
+- If 3 fix attempts fail, escalate with a clear explanation
+- Keep finish() explanation in plain English for the user
+- You have {max_steps} total steps — use them wisely
+
+User's machine OS: {os}
+"""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  System prompt
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,6 +448,7 @@ async def run_remediation_session(
     category:      str,
     user_id:       str = "",
     device_os:     str = "Unknown",
+    auto_mode:     bool = False,
 ) -> Dict[str, Any]:
     """
     Run the full agentic remediation loop for a ticket.
@@ -269,11 +463,14 @@ async def run_remediation_session(
     db = DatabaseConnection()
     session_id = _create_session(db, ticket_number, device_id, user_id)
 
-    log.info("Remediation session started: ticket=%s device=%s session=%s",
-             ticket_number, device_id, session_id[:8])
+    log.info("Remediation session started: ticket=%s device=%s session=%s auto_mode=%s",
+             ticket_number, device_id, session_id[:8], auto_mode)
 
     # ── Initialise LLM conversation ───────────────────────────────────────────
-    system_content = _SYSTEM_PROMPT.format(os=device_os, max_steps=MAX_STEPS)
+    if auto_mode:
+        system_content = _AUTO_SYSTEM_PROMPT.format(os=device_os, max_steps=MAX_STEPS)
+    else:
+        system_content = _SYSTEM_PROMPT.format(os=device_os, max_steps=MAX_STEPS)
     messages: List[Any] = [
         SystemMessage(content=system_content),
         HumanMessage(content=(
@@ -286,7 +483,8 @@ async def run_remediation_session(
     ]
 
     callbacks  = get_callbacks()
-    llm        = get_llm(callbacks).bind_tools(_TOOLS)
+    tools      = _AUTO_TOOLS if auto_mode else _TOOLS
+    llm        = get_llm(callbacks).bind_tools(tools)
 
     step_count  = 0
     resolved    = False
@@ -348,14 +546,65 @@ async def run_remediation_session(
                 step_count = MAX_STEPS   # break outer loop
                 break
 
+            # ── auto mode tools: shell, read_file, write_file, list_dir, download, web_search ──
+            elif auto_mode and fn_name in ("shell", "read_file", "write_file",
+                                           "list_dir", "create_dir", "delete_path",
+                                           "move_path", "copy_path", "download",
+                                           "web_search"):
+                # Map LLM tool name → execute_auto command + build args
+                if fn_name == "shell":
+                    command = "shell"
+                    args    = {"command": fn_args.get("command", "")}
+                elif fn_name == "web_search":
+                    command = "web_search"
+                    args    = {"query": fn_args.get("query", "")}
+                elif fn_name == "download":
+                    command = "download"
+                    args    = {"url": fn_args.get("url", ""), "path": fn_args.get("path", "")}
+                else:
+                    command = fn_name
+                    args    = {k: v for k, v in fn_args.items() if k != "reasoning"}
+
+                fix_attempts += 1
+                _save_step(db, session_id, step_count, "command",
+                           command=command, args=args, llm_reasoning=reasoning)
+                try:
+                    result = await dispatch_tool_call(
+                        device_id=device_id,
+                        session_id=session_id,
+                        command=command,
+                        args=args,
+                        allow_tier2=True,
+                        auto_mode=True,
+                        timeout=TOOL_TIMEOUT,
+                    )
+                    output    = result.get("output", "")
+                    stderr    = result.get("stderr", "")
+                    exit_code = result.get("exit_code", 0)
+
+                    _save_step(db, session_id, step_count, "result",
+                               command=command, output=output, stderr=stderr,
+                               exit_code=exit_code)
+                    tool_content = (
+                        f"exit_code: {exit_code}\nstdout:\n{output[:8000]}"
+                        + (f"\nstderr:\n{stderr[:2000]}" if stderr else "")
+                    )
+                    messages.append(ToolMessage(content=tool_content, tool_call_id=tc_id))
+
+                except Exception as e:
+                    err_msg = f"Auto tool '{command}' failed: {e}"
+                    _save_step(db, session_id, step_count, "result",
+                               command=command, stderr=err_msg, exit_code=1)
+                    messages.append(ToolMessage(content=err_msg, tool_call_id=tc_id))
+
             # ── run_command() ─────────────────────────────────────────────────
             elif fn_name == "run_command":
                 command = fn_args.get("command", "")
                 args    = fn_args.get("args") or {}
                 is_fix  = command in __import__("agent.executor", fromlist=["TIER2"]).TIER2
-                if is_fix:
+                if is_fix and not auto_mode:
                     fix_attempts += 1
-                    # E3: gate Tier-2 commands behind technician approval
+                    # E3: gate Tier-2 commands behind technician approval (standard mode only)
                     from routes.agent_routes import request_tier2_approval
                     approved = await request_tier2_approval(
                         session_id=session_id,
@@ -375,6 +624,8 @@ async def run_remediation_session(
                         ))
                         step_count = MAX_STEPS
                         break
+                elif is_fix:
+                    fix_attempts += 1
 
                 _save_step(db, session_id, step_count, "command",
                            command=command, args=args, llm_reasoning=reasoning)

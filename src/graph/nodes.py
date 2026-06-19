@@ -323,7 +323,7 @@ def agent_task_node(state: TicketState) -> Dict:
         device_os = state.get("extracted_metadata", {}).get("device_os", "Unknown")
         try:
             from src.graph.remediation_graph import run_remediation_session
-            from routes.agent_routes import _main_loop
+            from routes.agent_routes import _main_loop, is_agent_auto_mode
             coro = run_remediation_session(
                 ticket_number=ticket_number,
                 device_id=device_id,
@@ -332,6 +332,7 @@ def agent_task_node(state: TicketState) -> Dict:
                 category=state.get("category", "general_inquiry"),
                 user_id=state.get("user_id", ""),
                 device_os=device_os,
+                auto_mode=is_agent_auto_mode(device_id),
             )
             if _main_loop and _main_loop.is_running():
                 _asyncio.run_coroutine_threadsafe(coro, _main_loop)

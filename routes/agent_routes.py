@@ -32,11 +32,19 @@ log    = logging.getLogger(__name__)
 # {device_id: WebSocket}
 _connected_agents: Dict[str, WebSocket] = {}
 
+# {device_id: bool} — True if agent was started with --auto / AGENT_AUTO_MODE=1
+_agent_auto_mode: Dict[str, bool] = {}
+
 # {call_id: asyncio.Future}  — pending agentic tool calls awaiting device reply
 _pending_tool_calls: Dict[str, asyncio.Future] = {}
 
 # E3: {session_id: asyncio.Future} — pending tech approval for Tier-2 commands
 _pending_approvals: Dict[str, asyncio.Future] = {}
+
+
+def is_agent_auto_mode(device_id: str) -> bool:
+    """Return True if the connected agent for this device has auto mode enabled."""
+    return _agent_auto_mode.get(device_id, False)
 
 # Main event loop — set at app startup; allows non-async threads to schedule
 # coroutines on the uvicorn loop via asyncio.run_coroutine_threadsafe.
@@ -57,6 +65,7 @@ class AgentTaskRequest(BaseModel):
 async def agent_websocket(device_id: str, ws: WebSocket):
     await ws.accept()
     _connected_agents[device_id] = ws
+    _agent_auto_mode[device_id] = False  # updated on register message
     log.info("Agent connected: %s (total=%d)", device_id, len(_connected_agents))
 
     try:
@@ -69,11 +78,15 @@ async def agent_websocket(device_id: str, ws: WebSocket):
             msg_type = msg.get("type", "")
 
             if msg_type == "register":
-                log.info("Agent registered: device_id=%s os=%s hostname=%s",
+                device_info = msg.get("device", {})
+                auto = bool(device_info.get("auto_mode", False))
+                _agent_auto_mode[device_id] = auto
+                log.info("Agent registered: device_id=%s os=%s hostname=%s auto_mode=%s",
                          device_id,
-                         msg.get("device", {}).get("os", "?"),
-                         msg.get("device", {}).get("hostname", "?"))
-                _update_device_last_seen(device_id, msg.get("device", {}))
+                         device_info.get("os", "?"),
+                         device_info.get("hostname", "?"),
+                         auto)
+                _update_device_last_seen(device_id, device_info)
                 # E1: kick off any tickets that were queued while offline
                 asyncio.create_task(_auto_start_pending_sessions(device_id))
 
@@ -114,6 +127,7 @@ async def agent_websocket(device_id: str, ws: WebSocket):
         log.error("Agent WebSocket error (device=%s): %s", device_id, e)
     finally:
         _connected_agents.pop(device_id, None)
+        _agent_auto_mode.pop(device_id, None)
         log.info("Agent disconnected: %s (remaining=%d)", device_id, len(_connected_agents))
 
 
@@ -127,6 +141,7 @@ async def dispatch_tool_call(
     command:     str,
     args:        dict,
     allow_tier2: bool = True,
+    auto_mode:   bool = False,
     script:      str  = None,
     script_type: str  = "auto",
     timeout:     int  = 120,
@@ -152,6 +167,7 @@ async def dispatch_tool_call(
         "command":     command,
         "args":        args,
         "allow_tier2": allow_tier2,
+        "auto_mode":   auto_mode,
     }
     if script is not None:
         msg["script"]      = script

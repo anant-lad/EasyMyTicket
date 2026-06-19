@@ -46,7 +46,7 @@ except ImportError:
     sys.exit(1)
 
 from agent.diagnostics  import get_system_info, ping, run_all as run_diagnostics
-from agent.executor     import execute, execute_script, TIER1, TIER2
+from agent.executor     import execute, execute_auto, execute_script, TIER1, TIER2
 from agent.offline_queue import (
     drain_pending_tasks, drain_to_websocket,
     enqueue_result, queue_stats,
@@ -87,6 +87,7 @@ API_KEY         = os.getenv("AGENT_API_KEY", "")
 DEVICE_ID       = _get_or_create_device_id()
 MONITOR_USER_ID = os.getenv("AGENT_MONITOR_USER_ID", "agent_monitor")
 RECONNECT_DELAY = int(os.getenv("AGENT_RECONNECT_DELAY", "10"))
+AUTO_MODE       = os.getenv("AGENT_AUTO_MODE", "0") == "1"  # full system access when enabled
 
 WS_URL = f"{API_URL.rstrip('/')}/ws/agent/{DEVICE_ID}"
 
@@ -177,9 +178,13 @@ async def handle_tool_call(msg: dict, ws) -> None:
     log.info("tool_call [session=%s call=%s]: %s args=%s",
              session_id[:8], call_id[:8], command, args)
 
+    # Server tells us if this session was started in auto mode
+    server_auto_mode = bool(msg.get("auto_mode", False))
+    use_auto = AUTO_MODE and server_auto_mode
+
     try:
         if script:
-            # Agentic mode: server sent an inline script (novel fix)
+            # Inline script from server (novel fix or auto mode custom command)
             exit_code, stdout, stderr = execute_script(
                 script, script_type=script_type, args=args
             )
@@ -190,6 +195,9 @@ async def handle_tool_call(msg: dict, ws) -> None:
             data = ping(args.get("host", "8.8.8.8"))
             exit_code = 0 if data.get("reachable") else 1
             stdout, stderr = json.dumps(data), ""
+        elif use_auto:
+            # Full unrestricted access — shell, file r/w, download, etc.
+            exit_code, stdout, stderr = execute_auto(command, args)
         else:
             exit_code, stdout, stderr = execute(command, args, allow_tier2=allow_tier2)
 
@@ -228,10 +236,11 @@ async def agent_loop(stop_event: asyncio.Event):
         WS_URL, additional_headers=headers,
         ping_interval=30, ping_timeout=10,
     ) as ws:
-        # Register
+        # Register — include auto_mode flag so server knows what this agent supports
+        device_info["auto_mode"] = AUTO_MODE
         await ws.send(json.dumps({"type": "register", "device": device_info}))
-        log.info("Registered: device_id=%s os=%s host=%s",
-                 DEVICE_ID, platform.system(), platform.node())
+        log.info("Registered: device_id=%s os=%s host=%s auto_mode=%s",
+                 DEVICE_ID, platform.system(), platform.node(), AUTO_MODE)
 
         # On reconnect — drain any unsent daily report and offline task results
         await send_pending_report(API_URL, API_KEY, DEVICE_ID)
@@ -335,7 +344,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EasyMyTicket Desktop Agent")
     parser.add_argument("--scan", action="store_true",
                         help="Run daily scan once and exit (called by OS scheduler)")
+    parser.add_argument("--auto", action="store_true",
+                        help=(
+                            "Enable auto mode: grants the AI full access to this machine "
+                            "(shell commands, file read/write, downloads). "
+                            "Equivalent to setting AGENT_AUTO_MODE=1."
+                        ))
     args = parser.parse_args()
+
+    if args.auto:
+        import agent.main as _self
+        _self.AUTO_MODE = True
+        os.environ["AGENT_AUTO_MODE"] = "1"
+        log.info("AUTO MODE ENABLED — AI has full system access on this machine")
 
     if args.scan:
         asyncio.run(_run_daily_scan_mode())

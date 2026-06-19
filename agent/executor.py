@@ -838,6 +838,186 @@ def execute_script(
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  AUTO MODE — unrestricted full-system access
+#  Enabled via AGENT_AUTO_MODE=1 env var or --auto CLI flag.
+#  Mirrors Claude Code's auto mode: shell, file r/w, web, download.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def execute_auto(
+    command: str,
+    args: Optional[dict] = None,
+    timeout: int = 120,
+) -> Tuple[int, str, str]:
+    """
+    Execute in auto mode — full unrestricted system access.
+    Only called when agent was started with AGENT_AUTO_MODE=1 / --auto.
+
+    Supported commands:
+      shell       — run any shell/PowerShell command string
+      read_file   — read any file (path)
+      write_file  — write content to any file (path, content)
+      append_file — append content to a file (path, content)
+      list_dir    — list directory contents (path)
+      create_dir  — create directory tree (path)
+      delete_path — delete file or directory (path)
+      move_path   — move/rename (src, dst)
+      copy_path   — copy file or directory tree (src, dst)
+      web_search  — search the web (query)
+      download    — download URL to path (url, path)
+    All named TIER1/TIER2 commands also work via fallthrough.
+    """
+    import shutil
+    args = args or {}
+
+    if command == "shell":
+        cmd_str = args.get("command", "")
+        if not cmd_str:
+            return 1, "", "No command provided"
+        log.info("AUTO shell [%s]: %s", _OS, cmd_str[:120])
+        try:
+            if _OS == "Windows":
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd_str],
+                    capture_output=True, text=True, timeout=timeout,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                result = subprocess.run(
+                    cmd_str, shell=True, executable="/bin/bash",
+                    capture_output=True, text=True, timeout=timeout,
+                )
+            log.info("AUTO shell exit=%d", result.returncode)
+            return result.returncode, result.stdout[:50_000], result.stderr[:10_000]
+        except subprocess.TimeoutExpired:
+            return 124, "", f"Timed out after {timeout}s"
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "read_file":
+        path = Path(args.get("path", ""))
+        try:
+            content = path.read_text(errors="replace")
+            log.info("AUTO read_file: %s (%d bytes)", path, len(content))
+            return 0, content[:100_000], ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "write_file":
+        path = Path(args.get("path", ""))
+        content = args.get("content", "")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            log.info("AUTO write_file: %s (%d bytes)", path, len(content))
+            return 0, f"Wrote {len(content)} bytes to {path}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "append_file":
+        path = Path(args.get("path", ""))
+        content = args.get("content", "")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as f:
+                f.write(content)
+            log.info("AUTO append_file: %s (+%d bytes)", path, len(content))
+            return 0, f"Appended {len(content)} bytes to {path}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "list_dir":
+        path = Path(args.get("path", "."))
+        try:
+            entries = []
+            for e in sorted(path.iterdir()):
+                try:
+                    stat = e.stat()
+                    kind = "d" if e.is_dir() else "f"
+                    entries.append(f"{kind} {stat.st_size:>12,}  {e.name}")
+                except OSError:
+                    entries.append(f"? {'?':>12}  {e.name}")
+            return 0, "\n".join(entries) or "(empty)", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "create_dir":
+        path = Path(args.get("path", ""))
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return 0, f"Created directory: {path}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "delete_path":
+        path = Path(args.get("path", ""))
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            log.info("AUTO delete_path: %s", path)
+            return 0, f"Deleted: {path}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "move_path":
+        src = Path(args.get("src", ""))
+        dst = Path(args.get("dst", ""))
+        try:
+            shutil.move(str(src), str(dst))
+            log.info("AUTO move_path: %s → %s", src, dst)
+            return 0, f"Moved {src} → {dst}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command == "copy_path":
+        src = Path(args.get("src", ""))
+        dst = Path(args.get("dst", ""))
+        try:
+            if src.is_dir():
+                shutil.copytree(str(src), str(dst))
+            else:
+                shutil.copy2(str(src), str(dst))
+            log.info("AUTO copy_path: %s → %s", src, dst)
+            return 0, f"Copied {src} → {dst}", ""
+        except Exception as e:
+            return 1, "", str(e)
+
+    elif command in ("web_search", "web_search_auto"):
+        query = args.get("query") or args.get("QUERY") or ""
+        return _web_search(query)
+
+    elif command == "download":
+        url  = args.get("url") or args.get("URL") or ""
+        path = args.get("path") or args.get("PATH") or ""
+        try:
+            if _OS == "Windows":
+                cmd_str = f'Invoke-WebRequest -Uri "{url}" -OutFile "{path}" -UseBasicParsing'
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", cmd_str],
+                    capture_output=True, text=True, timeout=300,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            elif shutil.which("wget"):
+                result = subprocess.run(
+                    ["wget", "-q", "-O", path, url],
+                    capture_output=True, text=True, timeout=300,
+                )
+            else:
+                result = subprocess.run(
+                    ["curl", "-L", "-o", path, url],
+                    capture_output=True, text=True, timeout=300,
+                )
+            log.info("AUTO download: %s → %s exit=%d", url, path, result.returncode)
+            return result.returncode, result.stdout, result.stderr
+        except Exception as e:
+            return 1, "", str(e)
+
+    # Fall through — all named TIER1/TIER2 commands also work in auto mode
+    return execute(command, args, timeout=timeout, allow_tier2=True)
+
+
 def list_available_commands() -> dict:
     """Return all available commands grouped by tier (useful for LLM system prompt)."""
     return {
