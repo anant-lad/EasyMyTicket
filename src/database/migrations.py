@@ -51,6 +51,9 @@ _MIGRATIONS = [
 
     # Fix: chat_messages/chat_sessions may have been created by an older script without these columns
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS user_id TEXT",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS ticket_number TEXT",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_message TIMESTAMPTZ",
     "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, created_at)",
 
