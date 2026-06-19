@@ -456,7 +456,7 @@ class FeedbackRequest(BaseModel):
     notes:                 Optional[str] = None
 
 
-@router.post("/api/tickets/{ticket_number}/feedback", tags=["tickets"])
+@router.post("/tickets/{ticket_number}/feedback", tags=["tickets"])
 def submit_feedback(ticket_number: str, req: FeedbackRequest):
     """E5: Technician/user submits feedback on classification accuracy and resolution quality."""
     db = get_db_connection()
@@ -491,7 +491,7 @@ def submit_feedback(ticket_number: str, req: FeedbackRequest):
     return {"success": True, "message": "Feedback recorded. Thank you!"}
 
 
-@router.get("/api/tickets/{ticket_number}/feedback", tags=["tickets"])
+@router.get("/tickets/{ticket_number}/feedback", tags=["tickets"])
 def get_feedback(ticket_number: str):
     db = get_db_connection()
     rows = db.execute_query(
