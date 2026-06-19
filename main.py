@@ -54,6 +54,10 @@ app.include_router(chat_router,       tags=["chat"])
 
 @app.on_event("startup")
 async def startup_event():
+    import asyncio
+    import routes.agent_routes as _ar
+    _ar._main_loop = asyncio.get_event_loop()
+
     try:
         Config.validate()
         log.info("Configuration validated")

@@ -38,6 +38,10 @@ _pending_tool_calls: Dict[str, asyncio.Future] = {}
 # E3: {session_id: asyncio.Future} — pending tech approval for Tier-2 commands
 _pending_approvals: Dict[str, asyncio.Future] = {}
 
+# Main event loop — set at app startup; allows non-async threads to schedule
+# coroutines on the uvicorn loop via asyncio.run_coroutine_threadsafe.
+_main_loop: asyncio.AbstractEventLoop = None
+
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 

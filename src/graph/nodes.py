@@ -270,22 +270,28 @@ def agent_task_node(state: TicketState) -> Dict:
     agent_connected = bool(device_id and is_agent_connected(device_id))
 
     if agent_connected:
-        # Fire-and-forget: agentic remediation loop runs in background
+        # Fire-and-forget: schedule agentic remediation on the main uvicorn event loop.
+        # agent_task_node runs in a thread-pool executor (no running loop here), so
+        # we must use run_coroutine_threadsafe to reach the WebSocket's event loop.
         device_os = state.get("extracted_metadata", {}).get("device_os", "Unknown")
         try:
             from src.graph.remediation_graph import run_remediation_session
-            loop = _asyncio.get_event_loop()
-            if loop.is_running():
-                _asyncio.ensure_future(run_remediation_session(
-                    ticket_number=ticket_number,
-                    device_id=device_id,
-                    title=state["title"],
-                    description=state["description"],
-                    category=state.get("category", "general_inquiry"),
-                    user_id=state.get("user_id", ""),
-                    device_os=device_os,
-                ))
-            log.info("Agentic session launched: ticket=%s device=%s", ticket_number, device_id)
+            from routes.agent_routes import _main_loop
+            coro = run_remediation_session(
+                ticket_number=ticket_number,
+                device_id=device_id,
+                title=state["title"],
+                description=state["description"],
+                category=state.get("category", "general_inquiry"),
+                user_id=state.get("user_id", ""),
+                device_os=device_os,
+            )
+            if _main_loop and _main_loop.is_running():
+                _asyncio.run_coroutine_threadsafe(coro, _main_loop)
+                log.info("Agentic session launched: ticket=%s device=%s", ticket_number, device_id)
+            else:
+                log.warning("Main event loop not available — cannot launch session for %s", ticket_number)
+                agent_connected = False
         except Exception as e:
             log.warning("Could not launch remediation session: %s", e)
             errors.append(f"session_launch: {e}")
