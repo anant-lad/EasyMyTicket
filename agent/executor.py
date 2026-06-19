@@ -190,6 +190,41 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
          "Get-PnpDevice -Class USB | ConvertTo-Json -Compress"],
     ),
 
+    # Camera / webcam
+    "camera_list": (
+        ["bash", "-c", "ls -la /dev/video* 2>/dev/null || echo 'No video devices found'"],
+        ["bash", "-c", "system_profiler SPCameraDataType 2>/dev/null"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-PnpDevice | Where-Object {$_.FriendlyName -like '*camera*' -or $_.FriendlyName -like '*webcam*'} | "
+         "Select-Object FriendlyName,Status,InstanceId | ConvertTo-Json -Compress"],
+    ),
+    "camera_driver_check": (
+        ["bash", "-c", "lsmod | grep -i 'uvc\\|video\\|camera'; dmesg | grep -i 'uvc\\|video\\|camera' | tail -20"],
+        ["bash", "-c", "log show --predicate \"subsystem contains 'camera'\" --last 1h --style compact 2>/dev/null | tail -30"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-PnpDevice | Where-Object {$_.FriendlyName -match 'camera|webcam'} | "
+         "Select-Object FriendlyName,Status,ConfigManagerErrorCode | ConvertTo-Json -Compress"],
+    ),
+    "camera_in_use_check": (
+        ["bash", "-c", "fuser /dev/video* 2>/dev/null && echo 'Camera in use' || echo 'Camera not in use by any process'"],
+        ["bash", "-c", "lsof +c 0 2>/dev/null | grep -i 'video\\|camera' | head -10 || echo 'No camera locks found'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-Process | Where-Object {$_.Modules.ModuleName -like '*camera*'} | "
+         "Select-Object Name,Id,Description | ConvertTo-Json -Compress"],
+    ),
+    "camera_permission_check": (
+        ["bash", "-c", "groups | grep -i 'video\\|camera' && echo 'User has video group' || echo 'User NOT in video group'"],
+        ["bash", "-c", "tccutil status Camera 2>/dev/null || echo 'TCC check unavailable'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-AppxPackage | Where-Object {$_.PackageFullName -match 'camera'} | "
+         "Select-Object Name,Status | ConvertTo-Json -Compress"],
+    ),
+    "camera_v4l2_info": (
+        ["bash", "-c", "v4l2-ctl --list-devices 2>/dev/null || echo 'v4l2-ctl not available'"],
+        ["bash", "-c", "echo 'v4l2 not applicable on macOS'"],
+        ["powershell", "-NoProfile", "-Command", "echo 'v4l2 not applicable on Windows'"],
+    ),
+
     # Security
     "firewall_status": (
         ["ufw", "status"],
@@ -436,6 +471,25 @@ TIER2: Dict[str, Tuple[List, List, List]] = {
         ["rm", "-rf", "__PATH__"],
         ["powershell", "-NoProfile", "-Command",
          "Remove-Item '__PATH__' -Recurse -Force -ErrorAction SilentlyContinue"],
+    ),
+
+    # Camera / webcam fixes
+    "reload_camera_driver": (
+        ["bash", "-c", "sudo modprobe -r uvcvideo && sudo modprobe uvcvideo && echo 'Camera driver reloaded'"],
+        ["bash", "-c", "echo 'macOS camera driver reload not needed; reset TCC instead'"],
+        ["powershell", "-NoProfile", "-Command",
+         "pnputil /restart-device (Get-PnpDevice | Where-Object {$_.FriendlyName -match 'camera'}).InstanceId"],
+    ),
+    "add_user_to_video_group": (
+        ["bash", "-c", "sudo usermod -aG video $(whoami) && echo 'Added to video group. Please log out and back in.'"],
+        ["bash", "-c", "echo 'macOS does not use video group'"],
+        ["powershell", "-NoProfile", "-Command", "echo 'Windows does not use video group'"],
+    ),
+    "kill_camera_process": (
+        ["bash", "-c", "fuser -k /dev/video* 2>/dev/null && echo 'Killed processes using camera' || echo 'No camera locks to kill'"],
+        ["bash", "-c", "lsof +c 0 2>/dev/null | grep -i video | awk '{print $2}' | xargs kill -9 2>/dev/null && echo 'Killed camera processes' || echo 'None'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-Process | Where-Object {$_.Modules.ModuleName -like '*camera*'} | Stop-Process -Force"],
     ),
 
     # Reset preferences (safe — deletes app plist, not system files)
