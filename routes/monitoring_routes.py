@@ -105,12 +105,6 @@ def get_dashboard_stats():
     """)
     session_stats = session_rows[0] if session_rows else {}
 
-    agent_rows = db.execute_query("""
-        SELECT COUNT(DISTINCT device_id) AS total_devices,
-               COUNT(DISTINCT device_id) FILTER (WHERE last_seen >= NOW() - INTERVAL '5 minutes') AS online_devices
-        FROM new_tickets WHERE device_id IS NOT NULL
-    """)
-    # Use a simple device ping count from connected agents registry
     from routes.agent_routes import _connected_agents
     return {
         "tickets": {

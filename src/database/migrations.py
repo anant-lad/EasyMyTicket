@@ -49,6 +49,11 @@ _MIGRATIONS = [
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS approval_command TEXT",
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS approval_reasoning TEXT",
 
+    # Fix: chat_messages/chat_sessions may have been created by an older script without these columns
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_message TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, created_at)",
+
     # E6: persistent device registry
     (
         "CREATE TABLE IF NOT EXISTS devices ("
