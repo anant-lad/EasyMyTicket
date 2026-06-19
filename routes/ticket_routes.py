@@ -28,18 +28,21 @@ class TicketCreateRequest(BaseModel):
     title: str = Field(..., description="Ticket title", min_length=1)
     description: str = Field(..., description="Ticket description", min_length=1)
     user_id: str = Field(..., description="User ID who created the ticket", min_length=1)
+    device_id: Optional[str] = Field(None, description="Desktop agent device ID (enables agentic auto-resolve)")
+    source: Optional[str] = Field("portal", description="Ticket source (portal, email, api)")
     due_date_time: Optional[str] = Field(
-        None, 
+        None,
         description="Due date and time in format: YYYY-MM-DD HH:MM:SS",
         example="2024-12-10 10:00:00"
     )
-    
+
     class Config:
         json_schema_extra = {
             "example": {
                 "title": "Email not working",
                 "description": "I cannot send emails through Outlook. Getting error message 'Connection timeout'",
                 "user_id": "user123",
+                "device_id": "a1b2c3d4-...",
                 "due_date_time": "2024-12-10 10:00:00"
             }
         }
@@ -99,7 +102,7 @@ class GenericResponse(BaseModel):
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
 async def create_ticket(
     ticket_request: TicketCreateRequest,
-    device_id: Optional[str] = Query(None, description="Desktop agent device ID (enables auto-resolve routing)"),
+    device_id: Optional[str] = Query(None, description="Desktop agent device ID (query param — body field takes precedence)"),
 ):
     """
     Create a ticket and run the full LangGraph agentic pipeline:
@@ -108,6 +111,9 @@ async def create_ticket(
     """
     import asyncio
     from src.graph.ticket_graph import process_ticket
+
+    # Body device_id takes precedence over query param
+    effective_device_id = ticket_request.device_id or device_id
 
     try:
         # Validate due_date_time format before entering the graph
@@ -128,8 +134,8 @@ async def create_ticket(
                 title=ticket_request.title,
                 description=ticket_request.description,
                 user_id=ticket_request.user_id,
-                source="portal",
-                device_id=device_id,
+                source=ticket_request.source or "portal",
+                device_id=effective_device_id,
                 due_date_time=ticket_request.due_date_time,
             ),
         )
