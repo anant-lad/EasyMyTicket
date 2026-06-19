@@ -3,6 +3,7 @@ EasyMyTicket — FastAPI application entry point.
 Cloud-native version: no Docker management, structured logging, K8s health probes, API auth.
 """
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,9 +35,16 @@ app = FastAPI(
 # Auth middleware (checks X-API-Key header; skips health/docs paths)
 app.add_middleware(APIKeyMiddleware)
 
+_dev_origins = ["http://localhost:3000", "http://localhost:3001"]
+_prod_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://easymyticket.vercel.app",
+).split(",")
+_allowed_origins = _dev_origins if Config.ENVIRONMENT != "production" else _prod_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten in prod via ALLOWED_ORIGINS env var
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

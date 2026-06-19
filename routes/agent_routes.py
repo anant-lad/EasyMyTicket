@@ -220,6 +220,20 @@ def list_connected_agents():
     return {"connected": list(_connected_agents.keys()), "count": len(_connected_agents)}
 
 
+@router.get("/api/agents/devices", tags=["agent"])
+def list_all_devices():
+    """Return all devices that have ever connected, with live status."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        "SELECT device_id, hostname, os_type, os_version, ip_address, first_seen, last_seen "
+        "FROM devices ORDER BY last_seen DESC"
+    ) or []
+    connected = set(_connected_agents.keys())
+    for row in rows:
+        row["online"] = row["device_id"] in connected
+    return {"devices": rows, "count": len(rows)}
+
+
 # ── E1: Pending-Agent ticket pickup ──────────────────────────────────────────
 
 @router.get("/api/agent/pending-tickets", tags=["agent"])
@@ -373,8 +387,30 @@ def _save_task_result(task_id, status, output, exit_code):
 
 
 def _update_device_last_seen(device_id: str, device_info: dict):
-    """Best-effort: log device info (no separate devices table yet)."""
+    """UPSERT device registration into the persistent devices table."""
     log.info("Device %s last seen: os=%s hostname=%s",
              device_id,
              device_info.get("os", "?"),
              device_info.get("hostname", "?"))
+    try:
+        db = DatabaseConnection()
+        db.execute_query(
+            """INSERT INTO devices (device_id, hostname, os_type, os_version, ip_address)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (device_id) DO UPDATE SET
+                 hostname   = EXCLUDED.hostname,
+                 os_type    = EXCLUDED.os_type,
+                 os_version = EXCLUDED.os_version,
+                 ip_address = EXCLUDED.ip_address,
+                 last_seen  = NOW()""",
+            (
+                device_id,
+                device_info.get("hostname"),
+                device_info.get("os"),
+                device_info.get("os_version"),
+                device_info.get("ip_address"),
+            ),
+            fetch=False,
+        )
+    except Exception as e:
+        log.warning("Failed to upsert device %s: %s", device_id, e)

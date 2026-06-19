@@ -48,6 +48,19 @@ _MIGRATIONS = [
     # E3: approval state column on agent_sessions
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS approval_command TEXT",
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS approval_reasoning TEXT",
+
+    # E6: persistent device registry
+    (
+        "CREATE TABLE IF NOT EXISTS devices ("
+        "device_id TEXT PRIMARY KEY, "
+        "hostname TEXT, "
+        "os_type TEXT, "
+        "os_version TEXT, "
+        "ip_address TEXT, "
+        "first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+        "last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)",
 ]
 
 
