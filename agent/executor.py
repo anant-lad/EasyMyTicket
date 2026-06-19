@@ -326,6 +326,26 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
         ["ping", "-c", "4", "8.8.8.8"],
         ["ping", "-n", "4", "8.8.8.8"],
     ),
+
+    # ── Web / network research ────────────────────────────────────────────────
+    # web_search is handled via Python (not a shell command) — see execute()
+    "web_search": ([], [], []),   # sentinel: routed to _web_search() below
+
+    "check_url": (
+        ["bash", "-c", "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 '__URL__'"],
+        ["bash", "-c", "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 '__URL__'"],
+        ["powershell", "-NoProfile", "-Command",
+         "try { $r=(Invoke-WebRequest '__URL__' -Method Head -TimeoutSec 10 -UseBasicParsing); "
+         "$r.StatusCode } catch { $_.Exception.Response.StatusCode.value__ }"],
+    ),
+
+    "verify_download": (
+        ["bash", "-c", "ls -lh '__PATH__' 2>/dev/null && file '__PATH__' && sha256sum '__PATH__'"],
+        ["bash", "-c", "ls -lh '__PATH__' 2>/dev/null && file '__PATH__' && shasum -a 256 '__PATH__'"],
+        ["powershell", "-NoProfile", "-Command",
+         "if (Test-Path '__PATH__') { Get-Item '__PATH__' | Select-Object Name,Length,LastWriteTime; "
+         "(Get-FileHash '__PATH__' -Algorithm SHA256).Hash }"],
+    ),
 }
 
 
@@ -492,6 +512,60 @@ TIER2: Dict[str, Tuple[List, List, List]] = {
          "Get-Process | Where-Object {$_.Modules.ModuleName -like '*camera*'} | Stop-Process -Force"],
     ),
 
+    # ── Web download & install ────────────────────────────────────────────────
+    # download_file: fetch any URL to a local path.
+    # __URL__  = the download link
+    # __PATH__ = destination file path (e.g. /tmp/driver.deb)
+    "download_file": (
+        ["bash", "-c",
+         "mkdir -p \"$(dirname '__PATH__')\" && "
+         "wget -q --show-progress --timeout=120 --tries=3 -O '__PATH__' '__URL__' && "
+         "echo 'Downloaded to __PATH__'"],
+        ["bash", "-c",
+         "mkdir -p \"$(dirname '__PATH__')\" && "
+         "curl -L --max-time 120 --retry 3 -o '__PATH__' '__URL__' && "
+         "echo 'Downloaded to __PATH__'"],
+        ["powershell", "-NoProfile", "-Command",
+         "New-Item -ItemType Directory -Force -Path (Split-Path '__PATH__') | Out-Null; "
+         "Invoke-WebRequest -Uri '__URL__' -OutFile '__PATH__' -TimeoutSec 120 -UseBasicParsing; "
+         "Write-Output 'Downloaded to __PATH__'"],
+    ),
+
+    # install_from_file: install a downloaded package.
+    # __PATH__ = path to the downloaded file (.deb / .rpm / .pkg / .dmg / .exe / .msi)
+    "install_from_file": (
+        ["bash", "-c",
+         "case '__PATH__' in "
+         "*.deb) sudo apt-get install -y '__PATH__' 2>/dev/null || sudo dpkg -i '__PATH__';; "
+         "*.rpm) sudo rpm -ivh '__PATH__';; "
+         "*.sh)  sudo bash '__PATH__';; "
+         "*.run) sudo chmod +x '__PATH__' && sudo '__PATH__';; "
+         "*) echo 'Unknown file type: __PATH__'; exit 1;; "
+         "esac"],
+        ["bash", "-c",
+         "case '__PATH__' in "
+         "*.pkg) sudo installer -pkg '__PATH__' -target /;; "
+         "*.dmg) hdiutil attach '__PATH__' && echo 'Mounted — manual install may be required';; "
+         "*.sh)  sudo bash '__PATH__';; "
+         "*) echo 'Unknown file type: __PATH__'; exit 1;; "
+         "esac"],
+        ["powershell", "-NoProfile", "-Command",
+         "$p='__PATH__'; "
+         "if ($p -match '\\.msi$') { Start-Process msiexec.exe -ArgumentList '/i',$p,'/quiet','/norestart' -Wait } "
+         "elseif ($p -match '\\.exe$') { Start-Process $p -ArgumentList '/S','/silent','/quiet' -Wait } "
+         "elseif ($p -match '\\.ps1$') { & powershell -ExecutionPolicy Bypass -File $p } "
+         "else { Write-Error 'Unknown file type' }"],
+    ),
+
+    # open_browser: open a URL in the system browser.
+    # Used when a driver/tool requires authenticated download via a web page.
+    # __URL__ = the URL to open
+    "open_browser": (
+        ["bash", "-c", "xdg-open '__URL__' 2>/dev/null || sensible-browser '__URL__' 2>/dev/null || echo 'No browser found; visit __URL__ manually'"],
+        ["bash", "-c", "open '__URL__'"],
+        ["powershell", "-NoProfile", "-Command", "Start-Process '__URL__'"],
+    ),
+
     # Reset preferences (safe — deletes app plist, not system files)
     "reset_app_prefs": (
         ["find", os.path.expanduser("~/.config"), "-name", "__APP__*", "-delete"],
@@ -520,6 +594,75 @@ PROTECTED_PATHS = {
     "C:\\Windows", "C:\\System32", "C:\\Program Files",
     "/System", "/Library/System", "/usr/bin", "/usr/sbin",
 }
+
+
+def _web_search(query: str, max_results: int = 6) -> Tuple[int, str, str]:
+    """
+    Search the web using DuckDuckGo's JSON API (no API key required).
+    Returns (exit_code, json_results, stderr).
+    """
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+
+    if not query:
+        return 1, "", "web_search requires a 'QUERY' argument"
+
+    url = "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1".format(
+        urllib.parse.quote_plus(query)
+    )
+    headers = {"User-Agent": "EasyMyTicket-Agent/1.0 (support automation)"}
+
+    results = []
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            import json as _json
+            data = _json.loads(resp.read().decode())
+
+        # Instant answer
+        if data.get("AbstractText"):
+            results.append({
+                "type": "answer",
+                "title": data.get("Heading", ""),
+                "url": data.get("AbstractURL", ""),
+                "snippet": data["AbstractText"][:300],
+            })
+
+        # Related topics
+        for topic in data.get("RelatedTopics", [])[:max_results]:
+            if isinstance(topic, dict) and topic.get("FirstURL") and topic.get("Text"):
+                results.append({
+                    "type": "result",
+                    "title": topic.get("Text", "")[:80],
+                    "url": topic["FirstURL"],
+                    "snippet": topic.get("Text", "")[:200],
+                })
+
+        # If DuckDuckGo returns nothing useful, try the HTML lite endpoint
+        if not results:
+            url2 = "https://lite.duckduckgo.com/lite/?q={}".format(urllib.parse.quote_plus(query))
+            req2 = urllib.request.Request(url2, headers=headers)
+            with urllib.request.urlopen(req2, timeout=15) as resp2:
+                html = resp2.read().decode(errors="replace")
+            # Extract <a> hrefs and surrounding text via simple regex
+            import re
+            links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', html)
+            for href, text in links[:max_results]:
+                if "duckduckgo.com" not in href:
+                    results.append({"type": "result", "title": text.strip(), "url": href, "snippet": ""})
+
+    except urllib.error.URLError as e:
+        return 1, "", f"Web search failed (network): {e}"
+    except Exception as e:
+        return 1, "", f"Web search failed: {e}"
+
+    if not results:
+        return 0, _json.dumps({"query": query, "results": [], "note": "No results found"}), ""
+
+    output = _json.dumps({"query": query, "result_count": len(results), "results": results}, indent=2)
+    log.info("web_search(%r) → %d results", query, len(results))
+    return 0, output, ""
 
 
 def _is_blocked(cmd: list) -> bool:
@@ -584,6 +727,11 @@ def execute(
         (exit_code, stdout, stderr)
     """
     args = args or {}
+
+    # ── Special Python-native handlers (not shell commands) ───────────────────
+    if command == "web_search":
+        query = args.get("QUERY") or args.get("query") or ""
+        return _web_search(query)
 
     if command in TIER1:
         spec = TIER1[command]
@@ -695,4 +843,12 @@ def list_available_commands() -> dict:
     return {
         "tier1_diagnostic": sorted(TIER1.keys()),
         "tier2_fix": sorted(TIER2.keys()),
+        "web_tools_note": (
+            "web_search(QUERY) — search the web for drivers, packages, or fixes (Tier-1, safe). "
+            "check_url(URL) — verify a URL is reachable before downloading (Tier-1). "
+            "verify_download(PATH) — check a downloaded file's type and checksum (Tier-1). "
+            "download_file(URL, PATH) — download a file via wget/curl/Invoke-WebRequest (Tier-2, needs approval). "
+            "install_from_file(PATH) — install a .deb/.rpm/.pkg/.dmg/.exe/.msi package (Tier-2, needs approval). "
+            "open_browser(URL) — open a URL in the system browser for auth-gated downloads (Tier-2, needs approval)."
+        ),
     }

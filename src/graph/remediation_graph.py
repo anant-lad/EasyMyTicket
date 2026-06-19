@@ -42,6 +42,7 @@ def _build_tool_definitions() -> list:
     cmds = list_available_commands()
     tier1_list = ", ".join(cmds["tier1_diagnostic"])
     tier2_list = ", ".join(cmds["tier2_fix"])
+    web_note   = cmds.get("web_tools_note", "")
 
     return [
         {
@@ -50,9 +51,17 @@ def _build_tool_definitions() -> list:
                 "name": "run_command",
                 "description": (
                     "Run a diagnostic or fix command on the user's machine. "
-                    "The result will be returned to you so you can reason about it. "
-                    f"Tier-1 (diagnostic, always safe): {tier1_list}. "
-                    f"Tier-2 (fix operations, use when confident): {tier2_list}."
+                    "The result will be returned to you so you can reason about it.\n"
+                    f"Tier-1 (diagnostic, always safe): {tier1_list}.\n"
+                    f"Tier-2 (fix operations, use when confident): {tier2_list}.\n"
+                    f"Web & download tools: {web_note}\n"
+                    "For web_search pass args={{\"QUERY\": \"your search terms\"}}. "
+                    "For download_file pass args={{\"URL\": \"https://...\", \"PATH\": \"/tmp/file.deb\"}}. "
+                    "For install_from_file pass args={{\"PATH\": \"/tmp/file.deb\"}}. "
+                    "For open_browser pass args={{\"URL\": \"https://...\"}}. "
+                    "On Linux use CLI downloads (wget/curl) whenever possible. "
+                    "On Windows/macOS, prefer direct download_file; fall back to open_browser "
+                    "only when the site requires authentication or a CAPTCHA."
                 ),
                 "parameters": {
                     "type": "object",
@@ -155,11 +164,23 @@ Workflow:
 6. VERIFY: re-run the relevant diagnostic to confirm the fix worked.
 7. FINISH: call finish() with a clear explanation for the user.
 
+Web search & download capabilities:
+- Use web_search(QUERY) to find driver names, package names, download URLs, or fix procedures.
+  Example: web_search(QUERY="ubuntu 22.04 uvcvideo camera driver fix")
+- Use check_url(URL) to verify a download link is reachable.
+- Use download_file(URL, PATH) to download drivers, packages, or tools to the device.
+  On Linux: always prefer CLI downloads (wget/curl via download_file) over open_browser.
+  On Windows/macOS: use download_file for direct links; use open_browser only when the
+  download requires authentication or a CAPTCHA that cannot be bypassed programmatically.
+- Use install_from_file(PATH) to install a downloaded .deb/.rpm/.pkg/.exe/.msi.
+- Use open_browser(URL) as a last resort for auth-gated OEM driver pages on Windows/macOS.
+- Use verify_download(PATH) to check a file's type and checksum after downloading.
+
 Rules:
 - Run Tier-1 (diagnostic) commands freely — they are read-only.
 - Run Tier-2 (fix) commands only when you have identified the root cause.
 - Never assume — always verify with a diagnostic command first.
-- If a fix attempt fails, try an alternative approach.
+- If a fix attempt fails, try an alternative approach including web search for the error message.
 - If after 3 fix attempts the issue persists, call finish(resolved=False) with escalation_reason.
 - Keep the user's explanation in plain English — no jargon.
 - You have {max_steps} total steps. Use them wisely.
