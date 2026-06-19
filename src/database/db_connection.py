@@ -183,7 +183,8 @@ class DatabaseConnection:
     ) -> List[Dict]:
         log.info("Semantic search: title=%r", title[:80])
 
-        cache_key = f"sim:{hash(title + description)}"
+        import hashlib
+        cache_key = f"sim:{hashlib.sha256((title + description).encode()).hexdigest()[:32]}"
         cached = redis_cache.get(cache_key)
         if cached:
             log.debug("Similarity cache hit")

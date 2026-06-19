@@ -789,3 +789,85 @@ async def get_ticket_assignments(
             status_code=500,
             detail=f"Error retrieving assignment history: {str(e)}"
         )
+
+
+# ── Historical data import ────────────────────────────────────────────────────
+
+class TicketImportRow(BaseModel):
+    ticketnumber: str
+    title: str
+    description: Optional[str] = None
+    status: str = "Closed"
+    priority: Optional[str] = None
+    issuetype: Optional[str] = None
+    subissuetype: Optional[str] = None
+    ticketcategory: Optional[str] = None
+    tickettype: Optional[str] = None
+    queueid: Optional[str] = None
+    resolution: Optional[str] = None
+    companyid: Optional[str] = None
+    user_id: Optional[str] = None
+    createdate: Optional[str] = None
+    duedatetime: Optional[str] = None
+    resolveddatetime: Optional[str] = None
+    completeddate: Optional[str] = None
+
+
+class TicketImportRequest(BaseModel):
+    tickets: List[TicketImportRow]
+
+
+class TicketImportResponse(BaseModel):
+    inserted: int
+    skipped: int
+    errors: int
+    total: int
+
+
+@router.post("/database/import-tickets", response_model=TicketImportResponse)
+def import_tickets_batch(req: TicketImportRequest):
+    """
+    Batch-insert historical tickets. Safe to call multiple times (ON CONFLICT DO NOTHING).
+    Protected by API key middleware same as all other routes.
+    """
+    db = get_db_connection()
+    inserted = skipped = errors = 0
+
+    sql = """
+        INSERT INTO new_tickets
+            (ticketnumber, title, description, status, priority,
+             issuetype, subissuetype, ticketcategory, tickettype, queueid,
+             resolution, companyid, user_id,
+             createdate, duedatetime, resolveddatetime, completeddate)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (ticketnumber) DO NOTHING
+    """
+
+    VALID_STATUSES = {
+        'Open','In Progress','Pending','Resolved','Closed',
+        'On Hold','Escalated','Cancelled','Awaiting User','Reopened'
+    }
+
+    for t in req.tickets:
+        status = t.status if t.status in VALID_STATUSES else "Closed"
+        try:
+            rows_affected = db.execute_query(
+                sql,
+                (
+                    t.ticketnumber, t.title, t.description, status, t.priority,
+                    t.issuetype, t.subissuetype, t.ticketcategory, t.tickettype, t.queueid,
+                    t.resolution, t.companyid, t.user_id,
+                    t.createdate, t.duedatetime, t.resolveddatetime, t.completeddate,
+                ),
+                fetch=False,
+            )
+            inserted += 1
+        except Exception as e:
+            errors += 1
+
+    return TicketImportResponse(
+        inserted=inserted,
+        skipped=skipped,
+        errors=errors,
+        total=len(req.tickets),
+    )
