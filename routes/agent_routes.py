@@ -19,7 +19,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.auth.dependencies import get_current_user
@@ -584,8 +585,6 @@ def get_session_report(session_id: str):
     return {"url": url, "s3_key": s3_key}
 
 
-from fastapi.responses import StreamingResponse as _StreamingResponse
-
 @router.get("/api/sessions/{session_id}/stream", tags=["agent"])
 async def stream_session_steps(session_id: str, since_step: int = Query(0)):
     """Server-Sent Events stream of new session steps since `since_step`.
@@ -616,7 +615,7 @@ async def stream_session_steps(session_id: str, since_step: int = Query(0)):
 
             await asyncio.sleep(2)
 
-    return _StreamingResponse(
+    return StreamingResponse(
         _event_gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
