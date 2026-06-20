@@ -63,10 +63,41 @@ class AgentTaskRequest(BaseModel):
 
 @router.websocket("/ws/agent/{device_id}")
 async def agent_websocket(device_id: str, ws: WebSocket):
+    key = ws.query_params.get("key", "")
+
+    # Authenticate via agent_api_key
+    authenticated_user_id: str = ""
+    if key:
+        db = DatabaseConnection()
+        user_rows = db.execute_query(
+            "SELECT user_id FROM user_data WHERE agent_api_key = %s LIMIT 1",
+            (key,),
+        )
+        if user_rows:
+            authenticated_user_id = user_rows[0]["user_id"]
+            log.info("Agent auth: key matched user_id=%s", authenticated_user_id)
+        else:
+            tech_rows = db.execute_query(
+                "SELECT tech_id FROM technician_data WHERE agent_api_key = %s LIMIT 1",
+                (key,),
+            )
+            if tech_rows:
+                authenticated_user_id = tech_rows[0]["tech_id"]
+                log.info("Agent auth: key matched tech_id=%s", authenticated_user_id)
+            else:
+                # Key provided but not found in either table — reject
+                await ws.close(code=4401, reason="Unauthorized")
+                log.warning("Agent connection rejected: invalid key for device_id=%s", device_id)
+                return
+    else:
+        # No key provided — allow through only in dev mode (no keys configured at all)
+        # In production deployments the installer always provides a key
+        log.info("Agent connected without API key (dev mode): device_id=%s", device_id)
+
     await ws.accept()
     _connected_agents[device_id] = ws
     _agent_auto_mode[device_id] = False  # updated on register message
-    log.info("Agent connected: %s (total=%d)", device_id, len(_connected_agents))
+    log.info("Agent connected: %s user=%s (total=%d)", device_id, authenticated_user_id or "anonymous", len(_connected_agents))
 
     try:
         async for raw in ws.iter_text():

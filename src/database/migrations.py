@@ -108,6 +108,10 @@ _MIGRATIONS = [
         "last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW())"
     ),
     "CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)",
+
+    # E7: per-user agent API key
+    "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS agent_api_key TEXT UNIQUE",
+    "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS agent_api_key TEXT UNIQUE",
 ]
 
 
@@ -122,6 +126,11 @@ def run_migrations():
             except Exception as e:
                 log.warning("Migration skipped (%s): %s", stmt[:60], e)
         log.info("Startup migrations complete (%d statements)", len(_MIGRATIONS))
+
+        # Backfill agent_api_key for existing users/techs
+        db.execute_query("UPDATE user_data SET agent_api_key = 'emt_' || replace(gen_random_uuid()::text, '-', '') WHERE agent_api_key IS NULL", ())
+        db.execute_query("UPDATE technician_data SET agent_api_key = 'emt_' || replace(gen_random_uuid()::text, '-', '') WHERE agent_api_key IS NULL", ())
+
         _seed_auth_credentials(db)
     except Exception as e:
         log.error("Startup migrations failed: %s", e)
