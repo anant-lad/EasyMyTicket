@@ -177,6 +177,10 @@ def classify_node(state: TicketState) -> Dict:
             "picklist": picklist_text,
         })
         classification = _parse_json(resp.content) or {}
+        log.info("LLM classification raw keys=%s issuetype=%s priority=%s",
+                 list(classification.keys()),
+                 classification.get("issuetype"),
+                 classification.get("priority"))
     except Exception as e:
         log.warning("Classification failed: %s", e)
         errors.append(f"classification: {e}")
