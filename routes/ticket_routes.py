@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 import uuid, logging
+import threading as _threading
+
+_PIPELINE_SEM = _threading.Semaphore(4)  # max 4 concurrent LangGraph pipelines
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.picklist_loader import get_picklist_loader
@@ -112,21 +115,26 @@ def _run_pipeline_background(
     device_id: Optional[str],
     due_date_time: Optional[str],
 ):
-    """Run the full LangGraph pipeline in background after ticket is created."""
-    try:
-        from src.graph.ticket_graph import process_ticket
-        process_ticket(
-            title=title,
-            description=description,
-            user_id=user_id,
-            source=source,
-            device_id=device_id,
-            due_date_time=due_date_time,
-            existing_ticket_number=ticket_number,
-        )
-        log.info("Background pipeline complete for %s", ticket_number)
-    except Exception as e:
-        log.error("Background pipeline failed for %s: %s", ticket_number, e)
+    """Run the full LangGraph pipeline in background after ticket is created.
+
+    A module-level semaphore (_PIPELINE_SEM) caps concurrent pipeline runs at 4
+    so that burst ticket creation (20+ tickets) does not cause OOM / worker timeout.
+    """
+    with _PIPELINE_SEM:
+        try:
+            from src.graph.ticket_graph import process_ticket
+            process_ticket(
+                title=title,
+                description=description,
+                user_id=user_id,
+                source=source,
+                device_id=device_id,
+                due_date_time=due_date_time,
+                existing_ticket_number=ticket_number,
+            )
+            log.info("Background pipeline complete for %s", ticket_number)
+        except Exception as e:
+            log.error("Background pipeline failed for %s: %s", ticket_number, e)
 
 
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
@@ -315,8 +323,10 @@ async def get_ticket(ticket_number: str = Path(..., description="The ticket numb
     try:
         db_conn = get_db_connection()
         query = """
-            SELECT * FROM new_tickets
-            WHERE ticketnumber = %s
+            SELECT t.*, td.tech_name AS assigned_tech_name
+            FROM new_tickets t
+            LEFT JOIN technician_data td ON td.tech_id = t.assigned_tech_id
+            WHERE t.ticketnumber = %s
         """
         results = db_conn.execute_query(query, (ticket_number,))
         
