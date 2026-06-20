@@ -196,6 +196,25 @@ def create_organization(req: CreateOrgRequest, _: dict = Depends(require_admin))
     return {"message": "Organization created", "org_id": req.org_id}
 
 
+@router.delete("/tickets/bulk", status_code=200)
+def bulk_delete_tickets(prefix: str = "TKT-", _: dict = Depends(require_admin)):
+    """Admin-only: delete all tickets whose ticketnumber starts with prefix, plus all dependent rows."""
+    db = DatabaseConnection()
+    ids = [r["ticketnumber"] for r in (db.execute_query(
+        "SELECT ticketnumber FROM new_tickets WHERE ticketnumber LIKE %s", (prefix + "%",), fetch=True) or [])]
+    if not ids:
+        return {"deleted": 0, "message": "No matching tickets found"}
+    placeholders = ",".join(["%s"] * len(ids))
+    db.execute_query(f"DELETE FROM session_steps WHERE session_id IN (SELECT session_id FROM agent_sessions WHERE ticket_number IN ({placeholders}))", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM agent_sessions WHERE ticket_number IN ({placeholders})", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM ticket_comments WHERE ticket_number IN ({placeholders})", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM ticket_attachments WHERE ticket_number IN ({placeholders})", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM ticket_feedback WHERE ticket_number IN ({placeholders})", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM chat_sessions WHERE ticket_number IN ({placeholders})", tuple(ids), fetch=False)
+    db.execute_query(f"DELETE FROM new_tickets WHERE ticketnumber IN ({placeholders})", tuple(ids), fetch=False)
+    return {"deleted": len(ids), "message": f"Deleted {len(ids)} tickets with prefix '{prefix}'"}
+
+
 @router.post("/organizations/{org_id}/members", status_code=200)
 def add_member_to_org(org_id: str, req: AddMemberRequest, _: dict = Depends(require_admin)):
     db = DatabaseConnection()
