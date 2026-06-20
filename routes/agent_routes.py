@@ -422,6 +422,79 @@ def get_session_steps(session_id: str):
     return {"steps": rows or []}
 
 
+@router.get("/api/tickets/{ticket_number}/session", tags=["agent"])
+def get_session_for_ticket(ticket_number: str):
+    """Return the most recent agent session for a given ticket."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        "SELECT * FROM agent_sessions WHERE ticket_number=%s ORDER BY created_at DESC LIMIT 1",
+        (ticket_number,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="No agent session for this ticket")
+    return rows[0]
+
+
+@router.get("/api/sessions/{session_id}/report", tags=["agent"])
+def get_session_report(session_id: str):
+    """Return a presigned S3 URL for the markdown report, or 404 if not yet generated."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        "SELECT report_s3_key FROM agent_sessions WHERE session_id=%s", (session_id,)
+    )
+    if not rows or not rows[0].get("report_s3_key"):
+        raise HTTPException(status_code=404, detail="Report not yet available")
+    import boto3, os
+    bucket = os.environ.get("S3_EXPORTS_BUCKET", "ticketing-prod-exports-808812816838")
+    s3_key = rows[0]["report_s3_key"]
+    s3 = boto3.client("s3", region_name="ap-south-1")
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": s3_key},
+        ExpiresIn=3600,
+    )
+    return {"url": url, "s3_key": s3_key}
+
+
+from fastapi.responses import StreamingResponse as _StreamingResponse
+
+@router.get("/api/sessions/{session_id}/stream", tags=["agent"])
+async def stream_session_steps(session_id: str, since_step: int = Query(0)):
+    """Server-Sent Events stream of new session steps since `since_step`.
+    Client reconnects on close; backend emits new steps every 2s while session is running.
+    """
+    async def _event_gen():
+        db = DatabaseConnection()
+        last_step = since_step
+        while True:
+            rows = db.execute_query(
+                "SELECT * FROM session_steps WHERE session_id=%s AND step_number>%s ORDER BY step_number",
+                (session_id, last_step),
+            ) or []
+            for row in rows:
+                import json as _json
+                data = _json.dumps({k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                                    for k, v in row.items()})
+                yield f"data: {data}\n\n"
+                last_step = max(last_step, row.get("step_number", last_step))
+
+            # Check if session finished
+            sess = db.execute_query(
+                "SELECT status FROM agent_sessions WHERE session_id=%s", (session_id,)
+            )
+            if sess and sess[0].get("status") not in ("running", "awaiting_approval"):
+                yield f"event: done\ndata: {sess[0]['status']}\n\n"
+                break
+
+            await asyncio.sleep(2)
+
+    return _StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _create_task_record(db, task_id, ticket_number, device_id, command_type, payload):

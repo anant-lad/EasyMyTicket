@@ -74,6 +74,31 @@ def _custom_callbacks() -> list:
 #  LLM chain builder (Groq → OpenRouter fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _groq_rate_limit_exceptions() -> tuple:
+    """Return exception types that indicate Groq quota/rate-limit exhaustion."""
+    types: list = []
+    try:
+        from groq import RateLimitError as _GroqRateLimit
+        types.append(_GroqRateLimit)
+    except ImportError:
+        pass
+    try:
+        # langchain_groq wraps the raw error in this on some versions
+        from langchain_groq.chat_models import ChatGroqError as _ChatGroqError
+        types.append(_ChatGroqError)
+    except ImportError:
+        pass
+    # Always fall back on generic HTTP 429 pattern caught by openai-compat clients
+    try:
+        from openai import RateLimitError as _OAIRateLimit
+        types.append(_OAIRateLimit)
+    except ImportError:
+        pass
+    # Broad safety net: any exception whose message contains rate-limit signals
+    types.append(Exception)
+    return tuple(types)
+
+
 def _build_chain(groq_model: str, openrouter_model: str) -> BaseChatModel:
     from src.config import Config
     from langchain_groq import ChatGroq
@@ -100,12 +125,22 @@ def _build_chain(groq_model: str, openrouter_model: str) -> BaseChatModel:
             },
         )
         fallbacks.append(openrouter_llm)
-        log.debug("OpenRouter fallback configured (%s)", openrouter_model)
+        log.info("OpenRouter fallback configured: %s → %s", groq_model, openrouter_model)
     else:
-        log.debug("OPENROUTER_API_KEY not set — no fallback provider")
+        log.warning("OPENROUTER_API_KEY not set — Groq rate-limit has no fallback")
 
     if fallbacks:
-        return groq_llm.with_fallbacks(fallbacks, exceptions_to_handle=(Exception,))
+        exc_types = _groq_rate_limit_exceptions()
+        # Retry Groq up to 3x with backoff before falling over to OpenRouter
+        groq_with_retry = groq_llm.with_retry(
+            retry_if_exception_type=exc_types,
+            wait_exponential_jitter=True,
+            stop_after_attempt=3,
+        )
+        return groq_with_retry.with_fallbacks(
+            fallbacks,
+            exceptions_to_handle=exc_types,
+        )
     return groq_llm
 
 

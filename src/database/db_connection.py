@@ -14,6 +14,10 @@ import psycopg2.pool
 from psycopg2.extras import RealDictCursor
 import numpy as np
 from groq import Groq
+try:
+    from openai import OpenAI as _OpenAI
+except ImportError:
+    _OpenAI = None
 from fastembed import TextEmbedding
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -64,7 +68,9 @@ class DatabaseConnection:
 
     def __init__(self):
         self.groq_client: Optional[Groq] = None
+        self.openrouter_client = None
         self._init_groq()
+        self._init_openrouter()
 
     # ── Groq ─────────────────────────────────────────────────────────────────
 
@@ -74,6 +80,24 @@ class DatabaseConnection:
             raise ValueError("GROQ_API_KEY is not configured")
         self.groq_client = Groq(api_key=key)
         log.info("Groq client initialised")
+
+    def _init_openrouter(self):
+        if _OpenAI is None:
+            log.warning("openai package not installed — OpenRouter fallback unavailable")
+            return
+        key = getattr(Config, "OPENROUTER_API_KEY", None) or ""
+        if not key.strip():
+            log.warning("OPENROUTER_API_KEY not set — Groq rate-limit has no fallback")
+            return
+        self.openrouter_client = _OpenAI(
+            api_key=key.strip(),
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://easymyticket.app",
+                "X-Title": "EasyMyTicket",
+            },
+        )
+        log.info("OpenRouter fallback client initialised")
 
     # ── Connection helpers ────────────────────────────────────────────────────
 
@@ -121,7 +145,7 @@ class DatabaseConnection:
             {"role": "user", "content": prompt},
         ]
 
-        content = self._call_groq(model_name, messages)
+        content = self._call_llm(model_name, messages)
         if content is None:
             return None
 
@@ -136,24 +160,71 @@ class DatabaseConnection:
             return "llama-3.3-70b-versatile"
         return "llama-3.1-8b-instant"
 
-    def _call_groq(self, model_name: str, messages: list) -> Optional[str]:
-        fallback = "llama-3.1-8b-instant"
-        for attempt_model in ([model_name] + ([fallback] if model_name != fallback else [])):
+    @staticmethod
+    def _is_rate_limit_error(e: Exception) -> bool:
+        msg = str(e).lower()
+        return "rate" in msg or "429" in msg or "quota" in msg or "limit" in msg
+
+    def _call_groq_with_backoff(self, model_name: str, messages: list) -> Optional[str]:
+        """Try Groq with exponential backoff on rate-limit; return None on exhaustion."""
+        fallback_model = "llama-3.1-8b-instant"
+        models_to_try = [model_name] + ([fallback_model] if model_name != fallback_model else [])
+        for attempt_model in models_to_try:
+            for attempt in range(3):
+                try:
+                    t0 = time.time()
+                    resp = self.groq_client.chat.completions.create(
+                        model=attempt_model,
+                        messages=messages,
+                        temperature=Config.LLM_TEMPERATURE,
+                        max_tokens=Config.LLM_MAX_TOKENS,
+                    )
+                    log.info("Groq call model=%s elapsed=%.2fs tokens=%s",
+                             attempt_model, time.time() - t0,
+                             resp.usage.total_tokens if resp.usage else "?")
+                    return resp.choices[0].message.content.strip()
+                except Exception as e:
+                    if self._is_rate_limit_error(e) and attempt < 2:
+                        wait = 5 * (2 ** attempt)  # 5s, 10s
+                        log.warning("Groq rate-limit (model=%s, attempt=%d) — retrying in %ds",
+                                    attempt_model, attempt + 1, wait)
+                        time.sleep(wait)
+                        continue
+                    log.warning("Groq call failed (model=%s): %s", attempt_model, e)
+                    break  # try next model or give up
+        return None
+
+    def _call_openrouter(self, messages: list) -> Optional[str]:
+        """OpenRouter fallback using llama-3.3-70b-instruct."""
+        if not self.openrouter_client:
+            return None
+        for attempt in range(2):
             try:
                 t0 = time.time()
-                resp = self.groq_client.chat.completions.create(
-                    model=attempt_model,
+                resp = self.openrouter_client.chat.completions.create(
+                    model="meta-llama/llama-3.3-70b-instruct",
                     messages=messages,
                     temperature=Config.LLM_TEMPERATURE,
                     max_tokens=Config.LLM_MAX_TOKENS,
                 )
-                log.info("Groq call model=%s elapsed=%.2fs tokens=%s",
-                         attempt_model, time.time() - t0,
-                         resp.usage.total_tokens if resp.usage else "?")
+                log.info("OpenRouter fallback elapsed=%.2fs", time.time() - t0)
                 return resp.choices[0].message.content.strip()
             except Exception as e:
-                log.warning("Groq call failed (model=%s): %s", attempt_model, e)
+                if self._is_rate_limit_error(e) and attempt == 0:
+                    log.warning("OpenRouter rate-limit — retrying in 10s")
+                    time.sleep(10)
+                    continue
+                log.warning("OpenRouter call failed: %s", e)
+                break
         return None
+
+    def _call_llm(self, model_name: str, messages: list) -> Optional[str]:
+        """Try Groq first (with backoff), fall back to OpenRouter on exhaustion."""
+        result = self._call_groq_with_backoff(model_name, messages)
+        if result is not None:
+            return result
+        log.warning("Groq exhausted — switching to OpenRouter fallback")
+        return self._call_openrouter(messages)
 
     def _parse_json(self, content: str) -> Optional[dict]:
         # Strip markdown code fences

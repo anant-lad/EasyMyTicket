@@ -128,6 +128,10 @@ _MIGRATIONS = [
         "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
     ),
     "CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_number)",
+
+    # E13: agent session report (markdown doc uploaded to S3 on session completion)
+    "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS report_s3_key TEXT",
+    "ALTER TABLE session_steps ADD COLUMN IF NOT EXISTS step_type_detail TEXT",
 ]
 
 

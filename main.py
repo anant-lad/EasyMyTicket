@@ -38,11 +38,14 @@ app = FastAPI(
 app.add_middleware(APIKeyMiddleware)
 
 _dev_origins = ["http://localhost:3000", "http://localhost:3001"]
-_prod_origins = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://easymyticket.vercel.app",
-).split(",")
-_allowed_origins = _dev_origins if Config.ENVIRONMENT != "production" else _prod_origins
+_default_prod_origins = (
+    "https://easymyticket.vercel.app,"
+    "https://easymyticket-frontend.vercel.app"
+)
+_prod_origins = os.getenv("ALLOWED_ORIGINS", _default_prod_origins).split(",")
+# Strip whitespace from each origin in case of formatting issues
+_prod_origins = [o.strip() for o in _prod_origins if o.strip()]
+_allowed_origins = _dev_origins if Config.ENVIRONMENT not in ("production", "prod") else _prod_origins
 
 app.add_middleware(
     CORSMiddleware,
