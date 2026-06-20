@@ -430,7 +430,7 @@ class NotificationAgent:
                     )
                     self._send({
                         "to":      email,
-                        "subject": f"[EasyMyTicket] Ticket {ticket_number} — {"AI Agent Dispatched" if agent_dispatched else "Assigned"}",
+                        "subject": f"[EasyMyTicket] Ticket {ticket_number} — {'AI Agent Dispatched' if agent_dispatched else 'Assigned'}",
                         "body":    body,
                         "is_html": True,
                         "ticket_number": ticket_number,
