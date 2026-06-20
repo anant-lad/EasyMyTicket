@@ -17,12 +17,7 @@ spec:
     spec:
       serviceAccountName: ticketing-sa
       nodeSelector:
-        role: worker
-      tolerations:
-        - key: workload
-          operator: Equal
-          value: embedding
-          effect: NoSchedule
+        role: api
       containers:
         - name: ticket-worker
           image: 808812816838.dkr.ecr.ap-south-1.amazonaws.com/ticketing-api:latest
