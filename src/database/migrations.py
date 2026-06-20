@@ -177,8 +177,8 @@ def _seed_auth_credentials(db):
         if not tl_exists:
             db.execute_query(
                 "INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, tech_role, is_admin, org_id,"
-                " no_tickets_resolved, no_tickets_inprogress, available)"
-                " VALUES ('TECH009','Anant Lad (Lead)','ladanant023@gmail.com',%s,'tech_lead',FALSE,'ORG001',0,0,TRUE)"
+                " no_tickets_assigned, solved_tickets, current_workload)"
+                " VALUES ('TECH009','Anant Lad (Lead)','ladanant023@gmail.com',%s,'tech_lead',FALSE,'ORG001',0,0,0)"
                 " ON CONFLICT (tech_id) DO NOTHING",
                 (hash_password("EasyMT@Lead2024"),), fetch=False,
             )
