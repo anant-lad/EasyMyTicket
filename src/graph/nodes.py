@@ -346,6 +346,39 @@ def agent_task_node(state: TicketState) -> Dict:
     errors        = list(state.get("errors", []))
     agent_connected = bool(device_id and is_agent_connected(device_id))
 
+    # Auto-assign a tech lead (or least-loaded tech) as oversight technician
+    oversight_tech_id = None
+    oversight_tech_name = None
+    try:
+        db_ov = DatabaseConnection()
+        ov_rows = db_ov.execute_query(
+            """SELECT tech_id, tech_name, tech_mail
+               FROM technician_data
+               WHERE is_active = TRUE
+               ORDER BY
+                 CASE WHEN tech_role IN ('tech_lead','admin') THEN 0 ELSE 1 END,
+                 (SELECT COUNT(*) FROM new_tickets WHERE assigned_tech_id = technician_data.tech_id
+                  AND status NOT IN ('Resolved','Closed')) ASC
+               LIMIT 1""",
+        )
+        if ov_rows:
+            oversight_tech_id   = ov_rows[0]["tech_id"]
+            oversight_tech_name = ov_rows[0]["tech_name"]
+            oversight_tech_mail = ov_rows[0].get("tech_mail", "")
+            log.info("Oversight tech assigned: %s (%s) for ticket %s",
+                     oversight_tech_name, oversight_tech_id, ticket_number)
+        else:
+            # Fallback: any active tech
+            fb = db_ov.execute_query(
+                "SELECT tech_id, tech_name, tech_mail FROM technician_data WHERE is_active=TRUE LIMIT 1"
+            )
+            if fb:
+                oversight_tech_id   = fb[0]["tech_id"]
+                oversight_tech_name = fb[0]["tech_name"]
+                oversight_tech_mail = fb[0].get("tech_mail", "")
+    except Exception as e:
+        log.warning("Could not assign oversight tech: %s", e)
+
     if agent_connected:
         # Fire-and-forget: schedule agentic remediation on the main uvicorn event loop.
         # agent_task_node runs in a thread-pool executor (no running loop here), so
@@ -363,10 +396,13 @@ def agent_task_node(state: TicketState) -> Dict:
                 user_id=state.get("user_id", ""),
                 device_os=device_os,
                 auto_mode=is_agent_auto_mode(device_id),
+                oversight_tech_id=oversight_tech_id,
+                oversight_tech_name=oversight_tech_name,
             )
             if _main_loop and _main_loop.is_running():
                 _asyncio.run_coroutine_threadsafe(coro, _main_loop)
-                log.info("Agentic session launched: ticket=%s device=%s", ticket_number, device_id)
+                log.info("Agentic session launched: ticket=%s device=%s oversight=%s",
+                         ticket_number, device_id, oversight_tech_id)
             else:
                 log.warning("Main event loop not available — cannot launch session for %s", ticket_number)
                 agent_connected = False

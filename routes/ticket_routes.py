@@ -334,9 +334,20 @@ async def get_ticket(ticket_number: str = Path(..., description="The ticket numb
         db_conn = get_db_connection()
         query = """
             SELECT t.*, td.tech_name AS assigned_tech_name,
-                   EXISTS(SELECT 1 FROM agent_sessions WHERE ticket_number = t.ticketnumber) AS has_agent_session
+                   EXISTS(SELECT 1 FROM agent_sessions WHERE ticket_number = t.ticketnumber) AS has_agent_session,
+                   a.session_id AS agent_session_id,
+                   a.status AS agent_session_status,
+                   a.oversight_tech_id,
+                   a.oversight_tech_name,
+                   ot.tech_mail AS oversight_tech_mail
             FROM new_tickets t
             LEFT JOIN technician_data td ON td.tech_id = t.assigned_tech_id
+            LEFT JOIN LATERAL (
+                SELECT session_id, status, oversight_tech_id, oversight_tech_name
+                FROM agent_sessions WHERE ticket_number = t.ticketnumber
+                ORDER BY created_at DESC LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN technician_data ot ON ot.tech_id = a.oversight_tech_id
             WHERE t.ticketnumber = %s
         """
         results = db_conn.execute_query(query, (ticket_number,))

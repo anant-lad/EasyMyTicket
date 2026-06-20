@@ -132,6 +132,11 @@ _MIGRATIONS = [
     # E13: agent session report (markdown doc uploaded to S3 on session completion)
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS report_s3_key TEXT",
     "ALTER TABLE session_steps ADD COLUMN IF NOT EXISTS step_type_detail TEXT",
+
+    # E14: oversight technician assigned to agent sessions for human-in-the-loop monitoring
+    "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_tech_id TEXT",
+    "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_tech_name TEXT",
+    "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_notified_at TIMESTAMPTZ",
 ]
 
 

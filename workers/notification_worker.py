@@ -38,16 +38,17 @@ def _touch_heartbeat():
 
 def handle_notification(payload: dict):
     from src.utils.email_sender import EmailSender
-    sender = EmailSender()
+    sender  = EmailSender()
     to      = payload.get("to", "")
     subject = payload.get("subject", "")
     body    = payload.get("body", "")
+    is_html = payload.get("is_html", False)
 
     if not to:
         log.warning("Notification payload missing 'to' field: %s", payload)
         return
 
-    success = sender.send_email(to, subject, body)
+    success = sender.send_email(to, subject, body, is_html=is_html)
     if success:
         log.info("Email sent to %s for ticket %s", to, payload.get("ticket_number", "?"))
     else:

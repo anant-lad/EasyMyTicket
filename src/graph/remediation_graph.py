@@ -544,14 +544,16 @@ def _update_ticket(db: DatabaseConnection, ticket_number: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def run_remediation_session(
-    ticket_number: str,
-    device_id:     str,
-    title:         str,
-    description:   str,
-    category:      str,
-    user_id:       str = "",
-    device_os:     str = "Unknown",
-    auto_mode:     bool = False,
+    ticket_number:       str,
+    device_id:           str,
+    title:               str,
+    description:         str,
+    category:            str,
+    user_id:             str = "",
+    device_os:           str = "Unknown",
+    auto_mode:           bool = False,
+    oversight_tech_id:   Optional[str] = None,
+    oversight_tech_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the full agentic remediation loop for a ticket.
@@ -565,6 +567,32 @@ async def run_remediation_session(
 
     db = DatabaseConnection()
     session_id = _create_session(db, ticket_number, device_id, user_id)
+
+    # Store oversight tech and notify them
+    if oversight_tech_id:
+        try:
+            db.execute_query(
+                """UPDATE agent_sessions SET oversight_tech_id=%s, oversight_tech_name=%s,
+                   oversight_notified_at=NOW() WHERE session_id=%s""",
+                (oversight_tech_id, oversight_tech_name, session_id),
+                fetch=False,
+            )
+            # Get oversight tech email and send notification
+            tech_rows = db.execute_query(
+                "SELECT tech_mail FROM technician_data WHERE tech_id=%s LIMIT 1",
+                (oversight_tech_id,),
+            )
+            if tech_rows and tech_rows[0].get("tech_mail"):
+                from src.agents.notification_agent import NotificationAgent
+                NotificationAgent().notify_oversight_tech(
+                    tech_name=oversight_tech_name or oversight_tech_id,
+                    tech_email=tech_rows[0]["tech_mail"],
+                    ticket_number=ticket_number,
+                    title=title,
+                    session_id=session_id,
+                )
+        except Exception as e:
+            log.warning("Could not set oversight tech: %s", e)
 
     log.info("Remediation session started: ticket=%s device=%s session=%s auto_mode=%s",
              ticket_number, device_id, session_id[:8], auto_mode)

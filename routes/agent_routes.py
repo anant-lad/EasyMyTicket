@@ -422,12 +422,140 @@ def get_session_steps(session_id: str):
     return {"steps": rows or []}
 
 
+@router.post("/api/sessions/{session_id}/oversight", tags=["agent"])
+def assign_oversight_tech(
+    session_id: str,
+    tech_id: str,
+    payload: dict = Depends(get_current_user),
+):
+    """Assign (or re-assign) an oversight technician to an agent session. Tech-lead/admin only."""
+    if payload.get("role") not in ("tech_lead", "admin"):
+        raise HTTPException(status_code=403, detail="Only tech leads and admins may assign oversight")
+    db = DatabaseConnection()
+    tech_rows = db.execute_query(
+        "SELECT tech_id, tech_name, tech_mail FROM technician_data WHERE tech_id=%s LIMIT 1",
+        (tech_id,),
+    )
+    if not tech_rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    tech = tech_rows[0]
+    sess_rows = db.execute_query(
+        "SELECT ticket_number FROM agent_sessions WHERE session_id=%s", (session_id,)
+    )
+    if not sess_rows:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ticket_number = sess_rows[0]["ticket_number"]
+    db.execute_query(
+        """UPDATE agent_sessions SET oversight_tech_id=%s, oversight_tech_name=%s,
+           oversight_notified_at=NOW() WHERE session_id=%s""",
+        (tech["tech_id"], tech["tech_name"], session_id),
+        fetch=False,
+    )
+    if tech.get("tech_mail"):
+        title_rows = db.execute_query(
+            "SELECT title FROM new_tickets WHERE ticketnumber=%s LIMIT 1", (ticket_number,)
+        )
+        title = title_rows[0]["title"] if title_rows else ticket_number
+        from src.agents.notification_agent import NotificationAgent
+        NotificationAgent().notify_oversight_tech(
+            tech_name=tech["tech_name"],
+            tech_email=tech["tech_mail"],
+            ticket_number=ticket_number,
+            title=title,
+            session_id=session_id,
+        )
+    return {"success": True, "oversight_tech_id": tech["tech_id"], "oversight_tech_name": tech["tech_name"]}
+
+
+@router.get("/api/tickets/{ticket_number}/agent-activity", tags=["agent"])
+def get_agent_activity(ticket_number: str):
+    """User-friendly agent activity feed for the portal — translates technical steps to plain English."""
+    db = DatabaseConnection()
+    sess_rows = db.execute_query(
+        "SELECT * FROM agent_sessions WHERE ticket_number=%s ORDER BY created_at DESC LIMIT 1",
+        (ticket_number,),
+    )
+    if not sess_rows:
+        raise HTTPException(status_code=404, detail="No agent session")
+    session = dict(sess_rows[0])
+    step_rows = db.execute_query(
+        "SELECT step_type, command, args, output, exit_code, llm_reasoning, created_at "
+        "FROM session_steps WHERE session_id=%s ORDER BY step_number",
+        (session["session_id"],),
+    ) or []
+
+    def _friendly(step: dict) -> dict:
+        stype   = step.get("step_type", "")
+        command = step.get("command") or ""
+        args    = step.get("args") or {}
+        ec      = step.get("exit_code")
+        ts      = step.get("created_at")
+
+        if stype == "reasoning":
+            return None  # hide raw LLM reasoning from user
+
+        if command == "web_search":
+            query = args.get("query", "") if isinstance(args, dict) else ""
+            return {"icon": "🔍", "message": f"Searching for fix: "{query[:60]}"", "ts": ts, "ok": True}
+
+        if stype == "command" and command.startswith("script:"):
+            return {"icon": "📜", "message": "Running repair script on your computer…", "ts": ts, "ok": True}
+
+        CMD_LABELS = {
+            "list_usb": "Scanning USB devices",
+            "list_processes": "Checking running processes",
+            "check_disk": "Checking disk health",
+            "get_system_info": "Reading system information",
+            "get_network_info": "Checking network configuration",
+            "shell": "Running system command",
+            "read_file": "Reading system file",
+            "write_file": "Updating configuration file",
+            "list_dir": "Scanning directory",
+            "download": "Downloading required files",
+        }
+        if stype == "command":
+            label = CMD_LABELS.get(command, f"Running: {command}")
+            return {"icon": "⚡", "message": label + "…", "ts": ts, "ok": True}
+
+        if stype == "result":
+            success = ec == 0 or ec is None
+            if command == "web_search":
+                return {"icon": "📄", "message": "Found relevant information", "ts": ts, "ok": True}
+            if success:
+                return {"icon": "✅", "message": "Step completed successfully", "ts": ts, "ok": True}
+            else:
+                return {"icon": "⚠️", "message": "Step encountered an issue — trying alternative approach", "ts": ts, "ok": False}
+
+        return {"icon": "⚙️", "message": stype.replace("_", " ").capitalize(), "ts": ts, "ok": True}
+
+    activities = [r for r in (_friendly(s) for s in step_rows) if r is not None]
+
+    status = session.get("status", "")
+    if status == "resolved":
+        activities.append({"icon": "🎉", "message": "Issue resolved by AI agent!", "ts": session.get("completed_at"), "ok": True})
+    elif status == "escalated":
+        activities.append({"icon": "👨‍💻", "message": "Escalated to human technician for manual review", "ts": session.get("completed_at"), "ok": False})
+    elif status == "running":
+        activities.append({"icon": "🤖", "message": "Agent is actively working on your issue…", "ts": None, "ok": True, "live": True})
+
+    return {
+        "session_id":   session["session_id"],
+        "status":       status,
+        "resolution":   session.get("resolution"),
+        "activities":   activities,
+        "oversight_tech_name": session.get("oversight_tech_name"),
+    }
+
+
 @router.get("/api/tickets/{ticket_number}/session", tags=["agent"])
 def get_session_for_ticket(ticket_number: str):
-    """Return the most recent agent session for a given ticket."""
+    """Return the most recent agent session for a given ticket, including oversight tech."""
     db = DatabaseConnection()
     rows = db.execute_query(
-        "SELECT * FROM agent_sessions WHERE ticket_number=%s ORDER BY created_at DESC LIMIT 1",
+        """SELECT a.*, t.tech_name AS oversight_tech_display_name, t.tech_mail AS oversight_tech_mail
+           FROM agent_sessions a
+           LEFT JOIN technician_data t ON t.tech_id = a.oversight_tech_id
+           WHERE a.ticket_number=%s ORDER BY a.created_at DESC LIMIT 1""",
         (ticket_number,),
     )
     if not rows:
