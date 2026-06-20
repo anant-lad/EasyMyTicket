@@ -185,7 +185,7 @@ def _seed_auth_credentials(db):
             log.info("Auth seed: created tech lead TECH009 ladanant023@gmail.com")
 
         user_seeds = [
-            ("USR001", "Anant SRTTC", "anant.221269@srttc.ai.in", "EasyMT@User221"),
+            ("USR001", "Anant Lad",   "ladanant418@gmail.com",    "EasyMT@User221"),
             ("USR002", "Anant Lad",   "ladanant09@gmail.com",      "EasyMT@User09"),
         ]
         for user_id, name, email, pwd in user_seeds:
@@ -201,8 +201,8 @@ def _seed_auth_credentials(db):
                 log.info("Auth seed: created user %s (%s)", user_id, email)
             else:
                 db.execute_query(
-                    "UPDATE user_data SET org_id='ORG001' WHERE user_id=%s AND org_id IS NULL",
-                    (user_id,), fetch=False,
+                    "UPDATE user_data SET user_mail=%s, user_name=%s, org_id='ORG001' WHERE user_id=%s",
+                    (email, name, user_id), fetch=False,
                 )
     except Exception as e:
         log.warning("Auth credential seed skipped: %s", e)
