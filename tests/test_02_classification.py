@@ -10,15 +10,15 @@ def test_picklist_defaults_load():
     pl = get_picklist_loader()
     assert pl.get_label("priority", "1") == "Critical"
     assert pl.get_label("priority", "4") == "Low"
-    assert pl.get_label("issuetype", "1") == "Hardware"
-    assert pl.get_label("issuetype", "2") == "Software"
+    assert pl.get_label("issuetype", "4") == "Hardware & Equipment"
+    assert pl.get_label("issuetype", "5") == "Software & Applications"
 
 
 def test_picklist_reverse_lookup():
     from src.utils.picklist_loader import get_picklist_loader
     pl = get_picklist_loader()
     assert pl.get_value("priority", "High") == "2"
-    assert pl.get_value("issuetype", "Network") == "3"
+    assert pl.get_value("issuetype", "Network & Connectivity") == "6"
 
 
 def test_picklist_normalize_label():
