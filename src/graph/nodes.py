@@ -176,11 +176,13 @@ def classify_node(state: TicketState) -> Dict:
             "metadata": json.dumps(extracted_metadata),
             "picklist": picklist_text,
         })
-        classification = _parse_json(resp.content) or {}
-        log.info("LLM classification raw keys=%s issuetype=%s priority=%s",
-                 list(classification.keys()),
-                 classification.get("issuetype"),
-                 classification.get("priority"))
+        raw = _parse_json(resp.content) or {}
+        log.info("LLM classification raw=%s", json.dumps(raw)[:300])
+        # Detect OpenRouter/provider error responses
+        if "error" in raw and "issuetype" not in raw:
+            log.warning("Classification returned error body: %s", raw.get("error"))
+            raw = {}
+        classification = raw
     except Exception as e:
         log.warning("Classification failed: %s", e)
         errors.append(f"classification: {e}")
