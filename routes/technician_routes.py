@@ -1,11 +1,16 @@
 """
 Technician Assistance Routes
 """
-from fastapi import APIRouter, HTTPException, Depends
+import io
+import base64
+import logging
+from fastapi import APIRouter, File, Form, HTTPException, Depends, UploadFile
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from src.database.db_connection import DatabaseConnection
 from src.agents.technician_assistant import TechnicianAssistantAgent
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -53,21 +58,81 @@ class TechnicianAssistResponse(BaseModel):
     message: Optional[str] = None
     original_query: Optional[str] = None
 
+def _extract_file_text(filename: str, data: bytes, mime_type: str) -> str:
+    """Extract plain text from an uploaded file for LLM context."""
+    try:
+        if mime_type == "text/plain" or mime_type == "text/csv":
+            return data.decode("utf-8", errors="replace")
+
+        if mime_type == "application/pdf":
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(io.BytesIO(data))
+                return "\n".join(page.extract_text() or "" for page in reader.pages)
+            except ImportError:
+                return f"[PDF: {filename} — pypdf not installed]"
+
+        ext = (filename or "").rsplit(".", 1)[-1].lower()
+
+        if ext in ("docx",) or "wordprocessingml" in mime_type:
+            try:
+                from docx import Document
+                doc = Document(io.BytesIO(data))
+                return "\n".join(p.text for p in doc.paragraphs)
+            except ImportError:
+                return f"[DOCX: {filename} — python-docx not installed]"
+
+        if ext in ("xlsx", "xls") or "spreadsheetml" in mime_type:
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+                lines = []
+                for ws in wb.worksheets:
+                    for row in ws.iter_rows(values_only=True):
+                        lines.append("\t".join(str(c) if c is not None else "" for c in row))
+                return "\n".join(lines)
+            except ImportError:
+                return f"[XLSX: {filename} — openpyxl not installed]"
+
+        if mime_type.startswith("image/"):
+            return f"[Image: {filename}]"
+
+        return f"[Attachment: {filename}]"
+    except Exception as e:
+        log.warning("File extraction failed for %s: %s", filename, e)
+        return f"[{filename} — extraction error]"
+
+
 @router.post("/technician/assist", response_model=TechnicianAssistResponse)
-async def assist_technician(request: TechnicianAssistRequest):
+async def assist_technician(
+    text: str = Form(...),
+    session_id: Optional[str] = Form(None),
+    ticket_context: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[]),
+):
     """
-    Provide assistance to a technician based on their natural language request
+    Provide assistance to a technician. Accepts multipart/form-data with optional file attachments.
     """
     try:
+        # Build augmented message with file content
+        augmented = text
+        for f in files[:3]:  # max 3 files
+            data = await f.read()
+            if len(data) > 10 * 1024 * 1024:
+                continue  # skip oversized files silently
+            extracted = _extract_file_text(f.filename or "", data, f.content_type or "")
+            if extracted:
+                augmented += f"\n\n[Attached: {f.filename}]\n{extracted}"
+
+        if ticket_context:
+            augmented = f"[Ticket context]\n{ticket_context}\n\n{augmented}"
+
         agent = get_assistant_agent()
-        result = agent.assist_technician(request.text, session_id=request.session_id)
-        
+        result = agent.assist_technician(augmented, session_id=session_id)
+
         if not result.get("success"):
-            return TechnicianAssistResponse(
-                success=False,
-                message=result.get("message")
-            )
-            
+            return TechnicianAssistResponse(success=False, message=result.get("message"))
+
         return TechnicianAssistResponse(
             success=True,
             session_id=result.get("session_id"),
@@ -76,11 +141,9 @@ async def assist_technician(request: TechnicianAssistRequest):
             solution=result.get("solution"),
             sources=[Source(**s) for s in result.get("sources", [])],
             follow_up_questions=result.get("follow_up_questions", []),
-            original_query=result.get("original_query")
+            original_query=result.get("original_query"),
         )
-        
+
     except Exception as e:
-        print(f"Error in technician assistance: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error("Error in technician assistance: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

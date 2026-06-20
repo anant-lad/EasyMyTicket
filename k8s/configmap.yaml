@@ -38,3 +38,4 @@ data:
   SECRETS_MANAGER_PREFIX: "/ticketing/prod"
   OBSERVABILITY_PROVIDER: "custom"
   LANGFUSE_HOST: "https://cloud.langfuse.com"
+  S3_EXPORTS_BUCKET: "ticketing-prod-exports-808812816838"

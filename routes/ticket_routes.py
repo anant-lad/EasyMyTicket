@@ -142,6 +142,7 @@ async def create_ticket(
     ticket_request: TicketCreateRequest,
     background_tasks: BackgroundTasks,
     device_id: Optional[str] = Query(None, description="Desktop agent device ID (query param — body field takes precedence)"),
+    payload: Optional[dict] = Depends(optional_user),
 ):
     """
     Create a ticket immediately and run the LangGraph pipeline asynchronously.
@@ -150,6 +151,15 @@ async def create_ticket(
     from datetime import timezone
 
     effective_device_id = ticket_request.device_id or device_id
+
+    # Auto-attach connected agent device for authenticated users
+    if not effective_device_id and payload:
+        from routes.agent_routes import get_connected_device_for_user
+        uid = payload.get("sub")
+        if uid:
+            effective_device_id = get_connected_device_for_user(uid)
+            if effective_device_id:
+                log.info("Auto-attached device %s for user %s", effective_device_id, uid)
 
     if ticket_request.due_date_time:
         try:
@@ -323,7 +333,8 @@ async def get_ticket(ticket_number: str = Path(..., description="The ticket numb
     try:
         db_conn = get_db_connection()
         query = """
-            SELECT t.*, td.tech_name AS assigned_tech_name
+            SELECT t.*, td.tech_name AS assigned_tech_name,
+                   EXISTS(SELECT 1 FROM agent_sessions WHERE ticket_number = t.ticketnumber) AS has_agent_session
             FROM new_tickets t
             LEFT JOIN technician_data td ON td.tech_id = t.assigned_tech_id
             WHERE t.ticketnumber = %s
@@ -901,3 +912,183 @@ def _list_technicians_impl(payload):
 @router.get("/tickets/technicians", tags=["tickets"])
 def list_active_technicians(payload: dict = Depends(require_tech)):
     return _list_technicians_impl(payload)
+
+
+# ── Real-time ticket chat (WebSocket) ─────────────────────────────────────────
+
+import asyncio as _asyncio
+import json as _json
+from typing import Set
+from fastapi import WebSocket, WebSocketDisconnect
+
+_ticket_chat_rooms: Dict[str, Set[WebSocket]] = {}
+
+
+@router.websocket("/ws/tickets/{ticket_number}/chat")
+async def ticket_chat_ws(ticket_number: str, ws: WebSocket, token: str = Query(None)):
+    """Real-time chat WebSocket for a specific ticket (user ↔ tech)."""
+    from src.auth.jwt_handler import decode_token
+
+    payload_ws = decode_token(token) if token else None
+    author_id   = (payload_ws or {}).get("sub", "anonymous")
+    author_name = (payload_ws or {}).get("name", "User")
+    author_type = "tech" if (payload_ws or {}).get("role") in ("tech", "tech_lead", "admin") else "user"
+
+    await ws.accept()
+    _ticket_chat_rooms.setdefault(ticket_number, set()).add(ws)
+    log.info("Chat WS connected: ticket=%s author=%s (%s)", ticket_number, author_id, author_type)
+
+    try:
+        async for raw in ws.iter_text():
+            try:
+                data = _json.loads(raw)
+            except _json.JSONDecodeError:
+                continue
+
+            content = (data.get("content") or "").strip()
+            attachment = data.get("attachment")  # {filename, url} if file was uploaded first
+            if not content and not attachment:
+                continue
+
+            db = get_db_connection()
+            rows = db.execute_query(
+                "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+                (ticket_number, author_id, author_type, author_name, content or (attachment or {}).get("filename", "")),
+            )
+            comment_id = rows[0]["id"] if rows else None
+            created_at = rows[0]["created_at"].isoformat() if rows and rows[0].get("created_at") else datetime.utcnow().isoformat()
+
+            broadcast = {
+                "type":        "message",
+                "comment_id":  comment_id,
+                "author_id":   author_id,
+                "author_type": author_type,
+                "author_name": author_name,
+                "content":     content,
+                "attachment":  attachment,
+                "created_at":  created_at,
+            }
+            msg_str = _json.dumps(broadcast, default=str)
+            dead = set()
+            for subscriber in list(_ticket_chat_rooms.get(ticket_number, set())):
+                try:
+                    await subscriber.send_text(msg_str)
+                except Exception:
+                    dead.add(subscriber)
+            _ticket_chat_rooms.get(ticket_number, set()).difference_update(dead)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.error("Chat WS error ticket=%s: %s", ticket_number, e)
+    finally:
+        _ticket_chat_rooms.get(ticket_number, set()).discard(ws)
+        log.info("Chat WS disconnected: ticket=%s author=%s", ticket_number, author_id)
+
+
+# ── File attachments ──────────────────────────────────────────────────────────
+
+import os as _os
+import uuid as _uuid
+from fastapi import UploadFile, File
+
+_S3_BUCKET    = _os.environ.get("S3_EXPORTS_BUCKET", "ticketing-prod-exports-808812816838")
+_ALLOWED_MIME = {
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain", "text/csv",
+}
+_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+@router.post("/tickets/{ticket_number}/attachments", tags=["tickets"])
+async def upload_attachment(
+    ticket_number: str,
+    file: UploadFile = File(...),
+    payload: dict = Depends(get_current_user),
+):
+    """Upload a file attachment for a ticket (stored in S3, URL returned)."""
+    import boto3
+
+    if file.content_type not in _ALLOWED_MIME:
+        raise HTTPException(status_code=415, detail=f"File type not allowed: {file.content_type}")
+
+    data = await file.read()
+    if len(data) > _MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 25 MB limit")
+
+    uploader_id   = payload.get("sub", "unknown")
+    uploader_type = "tech" if payload.get("role") in ("tech", "tech_lead", "admin") else "user"
+    ext           = (_os.path.splitext(file.filename or "")[1] or "").lower()
+    s3_key        = f"attachments/{ticket_number}/{_uuid.uuid4().hex}{ext}"
+
+    try:
+        s3 = boto3.client("s3", region_name="ap-south-1")
+        s3.put_object(
+            Bucket=_S3_BUCKET,
+            Key=s3_key,
+            Body=data,
+            ContentType=file.content_type,
+            ContentDisposition=f'attachment; filename="{file.filename}"',
+        )
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": _S3_BUCKET, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+    except Exception as e:
+        log.error("S3 upload failed: %s", e)
+        raise HTTPException(status_code=500, detail="File upload failed")
+
+    db = get_db_connection()
+    db.execute_query(
+        "INSERT INTO ticket_attachments (ticket_number, uploader_id, uploader_type, filename, s3_key, file_size, mime_type)"
+        " VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (ticket_number, uploader_id, uploader_type, file.filename, s3_key, len(data), file.content_type),
+        fetch=False,
+    )
+
+    return {
+        "filename":  file.filename,
+        "s3_key":    s3_key,
+        "url":       url,
+        "mime_type": file.content_type,
+        "size":      len(data),
+    }
+
+
+@router.get("/tickets/{ticket_number}/attachments", tags=["tickets"])
+def list_attachments(
+    ticket_number: str,
+    payload: dict = Depends(get_current_user),
+):
+    """List all attachments for a ticket with fresh presigned URLs."""
+    import boto3
+
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT id, uploader_id, uploader_type, filename, s3_key, file_size, mime_type, created_at"
+        " FROM ticket_attachments WHERE ticket_number=%s ORDER BY created_at ASC",
+        (ticket_number,),
+    ) or []
+
+    s3 = boto3.client("s3", region_name="ap-south-1")
+    result = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["url"] = s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": _S3_BUCKET, "Key": r["s3_key"]},
+                ExpiresIn=3600,
+            )
+        except Exception:
+            item["url"] = None
+        if isinstance(item.get("created_at"), datetime):
+            item["created_at"] = item["created_at"].isoformat()
+        result.append(item)
+
+    return {"attachments": result, "count": len(result)}

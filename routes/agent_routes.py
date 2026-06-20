@@ -19,9 +19,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from src.auth.dependencies import get_current_user
 from src.database.db_connection import DatabaseConnection
 
 router = APIRouter()
@@ -40,6 +41,9 @@ _pending_tool_calls: Dict[str, asyncio.Future] = {}
 
 # E3: {session_id: asyncio.Future} — pending tech approval for Tier-2 commands
 _pending_approvals: Dict[str, asyncio.Future] = {}
+
+# Reverse mapping: user_id/tech_id → device_id (for auto-attaching device to tickets)
+_user_to_device: Dict[str, str] = {}
 
 
 def is_agent_auto_mode(device_id: str) -> bool:
@@ -97,6 +101,8 @@ async def agent_websocket(device_id: str, ws: WebSocket):
     await ws.accept()
     _connected_agents[device_id] = ws
     _agent_auto_mode[device_id] = False  # updated on register message
+    if authenticated_user_id:
+        _user_to_device[authenticated_user_id] = device_id
     log.info("Agent connected: %s user=%s (total=%d)", device_id, authenticated_user_id or "anonymous", len(_connected_agents))
 
     try:
@@ -159,6 +165,8 @@ async def agent_websocket(device_id: str, ws: WebSocket):
     finally:
         _connected_agents.pop(device_id, None)
         _agent_auto_mode.pop(device_id, None)
+        if authenticated_user_id:
+            _user_to_device.pop(authenticated_user_id, None)
         log.info("Agent disconnected: %s (remaining=%d)", device_id, len(_connected_agents))
 
 
@@ -218,6 +226,19 @@ async def dispatch_tool_call(
 
 def is_agent_connected(device_id: str) -> bool:
     return device_id in _connected_agents
+
+
+def get_connected_device_for_user(user_id: str) -> str | None:
+    """Return the device_id currently connected for this user, or None."""
+    return _user_to_device.get(user_id)
+
+
+@router.get("/api/agents/my-device", tags=["agent"])
+def get_my_device(payload: dict = Depends(get_current_user)):
+    """Return the device currently connected for the calling user."""
+    uid = payload.get("sub")
+    device_id = get_connected_device_for_user(uid) if uid else None
+    return {"device_id": device_id, "connected": device_id is not None}
 
 
 # ── REST: legacy one-shot task dispatch ──────────────────────────────────────

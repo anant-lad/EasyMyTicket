@@ -112,6 +112,22 @@ _MIGRATIONS = [
     # E7: per-user agent API key
     "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS agent_api_key TEXT UNIQUE",
     "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS agent_api_key TEXT UNIQUE",
+
+    # E12: ticket file attachments (stored in S3 exports bucket)
+    (
+        "CREATE TABLE IF NOT EXISTS ticket_attachments ("
+        "id BIGSERIAL PRIMARY KEY, "
+        "ticket_number TEXT NOT NULL REFERENCES new_tickets(ticketnumber), "
+        "comment_id BIGINT REFERENCES ticket_comments(id) ON DELETE SET NULL, "
+        "uploader_id TEXT NOT NULL, "
+        "uploader_type TEXT NOT NULL CHECK (uploader_type IN ('user','tech','agent')), "
+        "filename TEXT NOT NULL, "
+        "s3_key TEXT NOT NULL UNIQUE, "
+        "file_size INTEGER, "
+        "mime_type TEXT, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_number)",
 ]
 
 

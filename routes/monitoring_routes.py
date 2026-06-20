@@ -8,9 +8,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from src.auth.dependencies import optional_user
 from src.database.db_connection import DatabaseConnection
 
 router = APIRouter()
@@ -82,8 +83,8 @@ async def receive_daily_report(report: DailyReport, background_tasks: Background
 
 
 @router.get("/api/dashboard/stats", tags=["monitoring"])
-def get_dashboard_stats():
-    """Summary stats for the technician dashboard."""
+def get_dashboard_stats(payload: dict = Depends(optional_user)):
+    """Summary stats for the technician dashboard (global + per-tech if caller is a technician)."""
     db = DatabaseConnection()
     rows = db.execute_query("""
         SELECT
@@ -106,7 +107,7 @@ def get_dashboard_stats():
     session_stats = session_rows[0] if session_rows else {}
 
     from routes.agent_routes import _connected_agents
-    return {
+    result = {
         "tickets": {
             "open":           int(ticket_stats.get("open_count") or 0),
             "in_progress":    int(ticket_stats.get("in_progress_count") or 0),
@@ -115,14 +116,34 @@ def get_dashboard_stats():
             "created_today":  int(ticket_stats.get("created_today") or 0),
         },
         "sessions": {
-            "active":           int(session_stats.get("active_sessions") or 0),
+            "active":            int(session_stats.get("active_sessions") or 0),
             "awaiting_approval": int(session_stats.get("awaiting_approval") or 0),
-            "resolved_today":   int(session_stats.get("resolved_today") or 0),
+            "resolved_today":    int(session_stats.get("resolved_today") or 0),
         },
         "agents": {
             "connected": len(_connected_agents),
         },
     }
+
+    # Per-tech stats when the caller is a technician
+    if payload and payload.get("role") in ("tech", "tech_lead", "admin"):
+        tech_id = payload.get("sub")
+        my_rows = db.execute_query("""
+            SELECT
+                COUNT(*) FILTER (WHERE status='Open')       AS my_open,
+                COUNT(*) FILTER (WHERE status='In Progress') AS my_in_progress,
+                COUNT(*) FILTER (WHERE status='Resolved'
+                    AND resolveddatetime >= NOW() - INTERVAL '24 hours') AS my_resolved_today
+            FROM new_tickets WHERE assigned_tech_id=%s
+        """, (tech_id,))
+        my_stats = my_rows[0] if my_rows else {}
+        result["my_tickets"] = {
+            "open":          int(my_stats.get("my_open") or 0),
+            "in_progress":   int(my_stats.get("my_in_progress") or 0),
+            "resolved_today": int(my_stats.get("my_resolved_today") or 0),
+        }
+
+    return result
 
 
 @router.get("/api/agent/sessions", tags=["monitoring"])
