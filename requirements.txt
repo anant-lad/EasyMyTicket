@@ -54,3 +54,6 @@ langchain>=0.3.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 
+# Multipart form / file uploads (required by FastAPI for Form + UploadFile)
+python-multipart>=0.0.9
+

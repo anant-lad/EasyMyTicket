@@ -40,19 +40,20 @@ class TicketCreateRequest(BaseModel):
     due_date_time: Optional[str] = Field(
         None,
         description="Due date and time in format: YYYY-MM-DD HH:MM:SS",
-        example="2024-12-10 10:00:00"
+        json_schema_extra={"example": "2024-12-10 10:00:00"},
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "title": "Email not working",
                 "description": "I cannot send emails through Outlook. Getting error message 'Connection timeout'",
                 "user_id": "user123",
                 "device_id": "a1b2c3d4-...",
-                "due_date_time": "2024-12-10 10:00:00"
+                "due_date_time": "2024-12-10 10:00:00",
             }
         }
+    }
 
 
 class TicketResponse(BaseModel):
@@ -228,7 +229,7 @@ async def get_all_tickets(
     issuetype: Optional[str] = Query(None, description="Filter by issue type"),
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
     order_by: str = Query('createdate', description="Column to order by (createdate, duedatetime, ticketnumber, title, status, priority, issuetype)"),
-    order_direction: str = Query('DESC', regex='^(ASC|DESC)$', description="Order direction: ASC or DESC")
+    order_direction: str = Query('DESC', pattern='^(ASC|DESC)$', description="Order direction: ASC or DESC")
 ):
     """
     Get all tickets with pagination, filtering, and sorting
