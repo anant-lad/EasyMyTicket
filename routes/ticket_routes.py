@@ -1,14 +1,17 @@
 """
 Ticket creation and intake classification routes
 """
-from fastapi import APIRouter, HTTPException, Path, Query, Depends
+from fastapi import APIRouter, HTTPException, Path, Query, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+import uuid, logging
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.picklist_loader import get_picklist_loader
 from src.auth.dependencies import get_current_user, require_tech, require_tech_lead, optional_user
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,68 +103,96 @@ class GenericResponse(BaseModel):
     message: str
 
 
+def _run_pipeline_background(
+    ticket_number: str,
+    title: str,
+    description: str,
+    user_id: str,
+    source: str,
+    device_id: Optional[str],
+    due_date_time: Optional[str],
+):
+    """Run the full LangGraph pipeline in background after ticket is created."""
+    try:
+        from src.graph.ticket_graph import process_ticket
+        process_ticket(
+            title=title,
+            description=description,
+            user_id=user_id,
+            source=source,
+            device_id=device_id,
+            due_date_time=due_date_time,
+            existing_ticket_number=ticket_number,
+        )
+        log.info("Background pipeline complete for %s", ticket_number)
+    except Exception as e:
+        log.error("Background pipeline failed for %s: %s", ticket_number, e)
+
+
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
 async def create_ticket(
     ticket_request: TicketCreateRequest,
+    background_tasks: BackgroundTasks,
     device_id: Optional[str] = Query(None, description="Desktop agent device ID (query param — body field takes precedence)"),
 ):
     """
-    Create a ticket and run the full LangGraph agentic pipeline:
-      extract metadata → classify → auto-route decision →
-        [agent auto-fix | technician assignment] → generate resolution → notify
+    Create a ticket immediately and run the LangGraph pipeline asynchronously.
+    Returns ticket_number within ~200ms; classification/assignment happen in background.
     """
-    import asyncio
-    from src.graph.ticket_graph import process_ticket
+    from datetime import timezone
 
-    # Body device_id takes precedence over query param
     effective_device_id = ticket_request.device_id or device_id
 
+    if ticket_request.due_date_time:
+        try:
+            datetime.strptime(ticket_request.due_date_time, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid due_date_time format. Use: YYYY-MM-DD HH:MM:SS")
+
     try:
-        # Validate due_date_time format before entering the graph
-        if ticket_request.due_date_time:
-            try:
-                datetime.strptime(ticket_request.due_date_time, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid due_date_time format. Use: YYYY-MM-DD HH:MM:SS",
-                )
-
-        # Run the LangGraph pipeline (blocking call — offload to thread pool)
-        loop = asyncio.get_event_loop()
-        state = await loop.run_in_executor(
-            None,
-            lambda: process_ticket(
-                title=ticket_request.title,
-                description=ticket_request.description,
-                user_id=ticket_request.user_id,
-                source=ticket_request.source or "portal",
-                device_id=effective_device_id,
-                due_date_time=ticket_request.due_date_time,
-            ),
+        # ── Step 1: persist ticket immediately ──────────────────────────────
+        db_conn = get_db_connection()
+        ticket_number = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+        db_conn.execute_query(
+            "INSERT INTO new_tickets (ticketnumber, title, description, user_id, status, createdate, source)"
+            " VALUES (%s,%s,%s,%s,'Open',NOW(),%s) ON CONFLICT (ticketnumber) DO NOTHING",
+            (ticket_number, ticket_request.title, ticket_request.description,
+             ticket_request.user_id, ticket_request.source or "portal"),
+            fetch=False,
         )
+        log.info("Ticket %s created instantly, pipeline queued", ticket_number)
 
-        if state.get("ticket_number") == "FAILED":
-            raise HTTPException(status_code=500, detail="Ticket pipeline failed — check server logs")
+        # ── Step 2: queue pipeline in background ────────────────────────────
+        background_tasks.add_task(
+            _run_pipeline_background,
+            ticket_number,
+            ticket_request.title,
+            ticket_request.description,
+            ticket_request.user_id,
+            ticket_request.source or "portal",
+            effective_device_id,
+            ticket_request.due_date_time,
+        )
 
         return TicketResponse(
             success=True,
-            ticket_number=state["ticket_number"],
+            ticket_number=ticket_number,
             ticket_data={
                 "title": ticket_request.title,
                 "description": ticket_request.description,
                 "user_id": ticket_request.user_id,
                 "createdate": datetime.now().isoformat(),
                 "duedatetime": ticket_request.due_date_time,
-                "can_auto_resolve": state.get("can_auto_resolve", False),
-                "agent_connected": state.get("agent_connected", False),
-                "agent_task_id": state.get("agent_task_id"),
+                "can_auto_resolve": False,
+                "agent_connected": False,
+                "agent_task_id": None,
+                "pipeline_status": "processing",
             },
-            extracted_metadata=state.get("extracted_metadata", {}),
-            classification=state.get("classification", {}),
-            similar_tickets_found=len(state.get("similar_tickets", [])),
-            resolution=state.get("resolution"),
-            assigned_tech_id=state.get("assigned_tech_id"),
+            extracted_metadata={},
+            classification={},
+            similar_tickets_found=0,
+            resolution=None,
+            assigned_tech_id=None,
         )
 
     except HTTPException:

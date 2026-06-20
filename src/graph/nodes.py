@@ -48,10 +48,17 @@ def _parse_json(text: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_ticket_node(state: TicketState) -> Dict:
-    """Save the raw ticket to new_tickets and return the ticket_number."""
+    """Save the raw ticket to new_tickets and return the ticket_number.
+    If state already contains ticket_number the ticket was pre-created — skip INSERT."""
     from src.database.db_connection import DatabaseConnection
 
     db = DatabaseConnection()
+
+    # Pre-created by API endpoint (async path) — just return the existing number
+    if state.get("ticket_number"):
+        log.info("Ticket %s already exists, skipping INSERT", state["ticket_number"])
+        return {"ticket_number": state["ticket_number"], "errors": list(state.get("errors", []))}
+
     ticket_number = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
 
     query = """
@@ -189,9 +196,22 @@ def classify_node(state: TicketState) -> Dict:
         log.warning("Semantic search failed: %s", e)
         errors.append(f"semantic_search: {e}")
 
-    # Persist classification to DB
+    # Persist classification to DB — convert label strings → picklist codes
     try:
         db = DatabaseConnection()
+        pl = get_picklist_loader()
+
+        def to_code(field: str, label):
+            if label is None:
+                return None
+            code = pl.get_value(field, str(label))
+            if code:
+                return code
+            # already a code? accept if it's a known key
+            if str(label) in pl.get_all_values_for_field(field):
+                return str(label)
+            return str(label)  # store as-is as last resort
+
         db.execute_query(
             """
             UPDATE new_tickets
@@ -199,13 +219,17 @@ def classify_node(state: TicketState) -> Dict:
             WHERE ticketnumber=%s
             """,
             (
-                classification.get("issuetype"),
-                classification.get("ticketcategory"),
-                classification.get("tickettype"),
-                classification.get("priority"),
+                to_code("issuetype",      classification.get("issuetype")),
+                to_code("ticketcategory", classification.get("ticketcategory")),
+                to_code("tickettype",     classification.get("tickettype")),
+                to_code("priority",       classification.get("priority")),
                 state["ticket_number"],
             ),
         )
+        log.info("Classification persisted for %s: issuetype=%s priority=%s",
+                 state["ticket_number"],
+                 to_code("issuetype", classification.get("issuetype")),
+                 to_code("priority",  classification.get("priority")))
     except Exception as e:
         log.warning("Could not persist classification: %s", e)
 

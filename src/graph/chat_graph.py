@@ -127,8 +127,9 @@ def _save_messages(db: DatabaseConnection, session_id: str,
 def load_context_node(state: ChatState) -> ChatState:
     db = DatabaseConnection()
     context = _build_context(db, state.get("ticket_number"), state["user_id"])
+    current_messages = state["messages"]          # [HumanMessage(user_message)] — must be preserved
     history = _load_history(db, state["session_id"])
-    return {**state, "context": context, "messages": history}
+    return {**state, "context": context, "messages": history + current_messages}
 
 
 def llm_reply_node(state: ChatState) -> ChatState:

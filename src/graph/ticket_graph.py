@@ -108,10 +108,11 @@ def process_ticket(
     source: str = "portal",
     device_id: str | None = None,
     due_date_time: str | None = None,
+    existing_ticket_number: str | None = None,
 ) -> Dict[str, Any]:
     """
     Run the full ticket-processing pipeline and return the final state.
-
+    If existing_ticket_number is provided the pipeline skips DB insertion (ticket already exists).
     Raises nothing — errors are captured in state["errors"] and logged.
     """
     initial_state: TicketState = {
@@ -123,8 +124,11 @@ def process_ticket(
         "due_date_time": due_date_time,
         "errors": [],
     }
+    if existing_ticket_number:
+        initial_state["ticket_number"] = existing_ticket_number
 
-    log.info("Starting ticket pipeline for user=%s source=%s", user_id, source)
+    log.info("Starting ticket pipeline for user=%s source=%s ticket=%s",
+             user_id, source, existing_ticket_number or "new")
     try:
         final_state = _graph.invoke(initial_state)
         log.info(
@@ -136,4 +140,4 @@ def process_ticket(
         return final_state
     except Exception as e:
         log.error("Ticket pipeline fatal error: %s", e)
-        return {**initial_state, "errors": [str(e)], "ticket_number": "FAILED"}
+        return {**initial_state, "errors": [str(e)], "ticket_number": existing_ticket_number or "FAILED"}
