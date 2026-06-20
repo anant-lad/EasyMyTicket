@@ -34,14 +34,15 @@ def get_assistant_agent():
 class TechnicianAssistRequest(BaseModel):
     text: str = Field(..., description="Natural language input from technician")
     session_id: Optional[str] = Field(None, description="Optional session ID for conversational context")
-    
-    class Config:
-        json_schema_extra = {
+
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "text": "Help me with ticket T20240108.123456. I'm seeing a database connection error.",
-                "session_id": "550e8400-e29b-41d4-a716-446655440000"
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
             }
         }
+    }
 
 class Source(BaseModel):
     ticket_number: str

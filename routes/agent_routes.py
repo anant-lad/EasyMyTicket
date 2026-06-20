@@ -496,7 +496,7 @@ def get_agent_activity(ticket_number: str):
 
         if command == "web_search":
             query = args.get("query", "") if isinstance(args, dict) else ""
-            return {"icon": "🔍", "message": f"Searching for fix: "{query[:60]}"", "ts": ts, "ok": True}
+            return {"icon": "🔍", "message": f"Searching for fix: \"{query[:60]}\"", "ts": ts, "ok": True}
 
         if stype == "command" and command.startswith("script:"):
             return {"icon": "📜", "message": "Running repair script on your computer…", "ts": ts, "ok": True}
