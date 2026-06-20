@@ -272,6 +272,35 @@ async def get_all_tickets(
         )
 
 
+# ── Static sub-routes must appear BEFORE {ticket_number} wildcard ─────────────
+# These are defined here as stubs that call the real handlers below.
+# Real implementations are at the bottom of this file; they work because FastAPI
+# resolves by registration order, so these registrations win over {ticket_number}.
+
+@router.get("/tickets/my", tags=["tickets"], include_in_schema=False)
+def _my_tickets_stub(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    payload: dict = Depends(get_current_user),
+):
+    return _get_my_tickets_impl(status_filter, limit, payload)
+
+
+@router.get("/tickets/similar", tags=["tickets"], include_in_schema=False)
+def _similar_tickets_stub(
+    title: str = Query(...),
+    description: str = Query(""),
+    limit: int = Query(5, ge=1, le=20),
+    payload: dict = Depends(require_tech),
+):
+    return _get_similar_tickets_impl(title, description, limit, payload)
+
+
+@router.get("/tickets/technicians", tags=["tickets"], include_in_schema=False)
+def _technicians_stub(payload: dict = Depends(require_tech)):
+    return _list_technicians_impl(payload)
+
+
 @router.get("/tickets/{ticket_number}", response_model=TicketDetailResponse)
 async def get_ticket(ticket_number: str = Path(..., description="The ticket number to retrieve")):
     """
@@ -535,13 +564,7 @@ def get_feedback(ticket_number: str):
 
 # ── My Tickets (filtered by current user/tech) ────────────────────────────────
 
-@router.get("/tickets/my", tags=["tickets"])
-def get_my_tickets(
-    status_filter: Optional[str] = Query(None, alias="status"),
-    limit: int = Query(100, ge=1, le=500),
-    payload: dict = Depends(get_current_user),
-):
-    """Return tickets for the currently logged-in user or technician."""
+def _get_my_tickets_impl(status_filter, limit, payload):
     db = get_db_connection()
     role = payload.get("role", "")
     uid = payload.get("sub", "")
@@ -569,6 +592,16 @@ def get_my_tickets(
                 t[k] = v.isoformat()
         tickets.append(t)
     return {"success": True, "tickets": tickets, "total": len(tickets)}
+
+
+@router.get("/tickets/my", tags=["tickets"])
+def get_my_tickets(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    payload: dict = Depends(get_current_user),
+):
+    """Return tickets for the currently logged-in user or technician."""
+    return _get_my_tickets_impl(status_filter, limit, payload)
 
 
 # ── Ticket Status Update ──────────────────────────────────────────────────────
@@ -797,17 +830,8 @@ def reraise_ticket(
 
 # ── Similar Tickets (for tech AI assist) ─────────────────────────────────────
 
-@router.get("/tickets/similar", tags=["tickets"])
-def get_similar_tickets(
-    title: str = Query(..., description="Ticket title to search for similar"),
-    description: str = Query("", description="Ticket description"),
-    limit: int = Query(5, ge=1, le=20),
-    payload: dict = Depends(require_tech),
-):
-    """Return similar resolved tickets for technician AI assistance."""
+def _get_similar_tickets_impl(title, description, limit, payload):
     db = get_db_connection()
-    search_text = f"{title} {description}".strip()[:200]
-
     rows = db.execute_query(
         """SELECT ticketnumber, title, description, resolution, issuetype, priority, status
            FROM new_tickets
@@ -828,14 +852,28 @@ def get_similar_tickets(
     return {"success": True, "similar_tickets": tickets, "count": len(tickets)}
 
 
+@router.get("/tickets/similar", tags=["tickets"])
+def get_similar_tickets(
+    title: str = Query(..., description="Ticket title to search for similar"),
+    description: str = Query("", description="Ticket description"),
+    limit: int = Query(5, ge=1, le=20),
+    payload: dict = Depends(require_tech),
+):
+    """Return similar resolved tickets for technician AI assistance."""
+    return _get_similar_tickets_impl(title, description, limit, payload)
+
+
 # ── List Technicians (for reassign dropdown) ──────────────────────────────────
+
+def _list_technicians_impl(payload):
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT tech_id, tech_name, tech_mail, tech_role FROM technician_data"
+        " WHERE status='available' ORDER BY tech_name"
+    ) or []
+    return {"success": True, "technicians": [dict(r) for r in rows]}
+
 
 @router.get("/tickets/technicians", tags=["tickets"])
 def list_active_technicians(payload: dict = Depends(require_tech)):
-    db = get_db_connection()
-    rows = db.execute_query(
-        "SELECT tech_id, tech_name, tech_mail, tech_role, no_tickets_inprogress FROM technician_data"
-        " WHERE available=TRUE ORDER BY tech_name"
-    ) or []
-    techs = [dict(r) for r in rows]
-    return {"success": True, "technicians": techs}
+    return _list_technicians_impl(payload)
