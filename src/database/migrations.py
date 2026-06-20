@@ -60,6 +60,42 @@ _MIGRATIONS = [
     # E7: auth — is_admin flag on technicians
     "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
 
+    # E8: organizations
+    (
+        "CREATE TABLE IF NOT EXISTS organizations ("
+        "org_id TEXT PRIMARY KEY, "
+        "org_name TEXT NOT NULL, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS org_id TEXT",
+    "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS org_id TEXT",
+    "ALTER TABLE technician_data ADD COLUMN IF NOT EXISTS tech_role TEXT NOT NULL DEFAULT 'tech'",
+
+    # E9: ticket comments (user-tech dialogue per ticket)
+    (
+        "CREATE TABLE IF NOT EXISTS ticket_comments ("
+        "id BIGSERIAL PRIMARY KEY, "
+        "ticket_number TEXT NOT NULL REFERENCES new_tickets(ticketnumber), "
+        "author_id TEXT NOT NULL, "
+        "author_type TEXT NOT NULL CHECK (author_type IN ('user','tech','system')), "
+        "author_name TEXT, "
+        "content TEXT NOT NULL, "
+        "is_internal BOOLEAN NOT NULL DEFAULT FALSE, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_comments_ticket ON ticket_comments(ticket_number, created_at)",
+
+    # E10: ticket lifecycle fields
+    "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS parent_ticket TEXT",
+    "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS reraise_reason TEXT",
+    "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS feedback_required BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS feedback_submitted BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE new_tickets ADD COLUMN IF NOT EXISTS resolved_by_agent BOOLEAN NOT NULL DEFAULT FALSE",
+
+    # E11: direct tech-user chat sessions
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS chat_type TEXT DEFAULT 'bot'",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS tech_id TEXT",
+
     # E6: persistent device registry
     (
         "CREATE TABLE IF NOT EXISTS devices ("
@@ -99,26 +135,54 @@ def _seed_auth_credentials(db):
     try:
         from src.auth.password import hash_password
 
+        # Ensure Blackshift Technologies org exists
+        db.execute_query(
+            "INSERT INTO organizations (org_id, org_name) VALUES ('ORG001','Blackshift Technologies LLP')"
+            " ON CONFLICT (org_id) DO NOTHING",
+            fetch=False,
+        )
+
+        # tech_id, email, pwd, is_admin, tech_role
         tech_seeds = [
-            ("TECH001", "anantlad66@gmail.com",   "EasyMT@Tech66",    False),
-            ("TECH002", "anantlad0628@gmail.com",  "EasyMT@Admin2024", True),
-            ("TECH003", "carol.davis@company.com", "EasyMT@Tech123",   False),
-            ("TECH004", "david.kim@company.com",   "EasyMT@Tech123",   False),
-            ("TECH005", "emma.wilson@company.com", "EasyMT@Tech123",   False),
-            ("TECH006", "frank.lee@company.com",   "EasyMT@Tech123",   False),
-            ("TECH007", "grace.patel@company.com", "EasyMT@Tech123",   False),
-            ("TECH008", "henry.chen@company.com",  "EasyMT@Tech123",   False),
+            ("TECH001", "anantlad66@gmail.com",      "EasyMT@Tech66",    False, "tech"),
+            ("TECH002", "anantlad0628@gmail.com",     "EasyMT@Admin2024", True,  "tech"),
+            ("TECH003", "carol.davis@company.com",    "EasyMT@Tech123",   False, "tech"),
+            ("TECH004", "david.kim@company.com",      "EasyMT@Tech123",   False, "tech"),
+            ("TECH005", "emma.wilson@company.com",    "EasyMT@Tech123",   False, "tech"),
+            ("TECH006", "frank.lee@company.com",      "EasyMT@Tech123",   False, "tech"),
+            ("TECH007", "grace.patel@company.com",    "EasyMT@Tech123",   False, "tech"),
+            ("TECH008", "henry.chen@company.com",     "EasyMT@Tech123",   False, "tech"),
         ]
-        for tech_id, email, pwd, is_admin in tech_seeds:
+        for tech_id, email, pwd, is_admin, tech_role in tech_seeds:
             rows = db.execute_query(
                 "SELECT tech_password FROM technician_data WHERE tech_id=%s LIMIT 1", (tech_id,)
             )
             if rows and rows[0]["tech_password"] is None:
                 db.execute_query(
-                    "UPDATE technician_data SET tech_mail=%s, tech_password=%s, is_admin=%s WHERE tech_id=%s",
-                    (email, hash_password(pwd), is_admin, tech_id), fetch=False,
+                    "UPDATE technician_data SET tech_mail=%s, tech_password=%s, is_admin=%s, tech_role=%s, org_id='ORG001' WHERE tech_id=%s",
+                    (email, hash_password(pwd), is_admin, tech_role, tech_id), fetch=False,
                 )
                 log.info("Auth seed: set password for %s (%s)", tech_id, email)
+            else:
+                # Ensure org is linked even if password was already set
+                db.execute_query(
+                    "UPDATE technician_data SET org_id='ORG001' WHERE tech_id=%s AND org_id IS NULL",
+                    (tech_id,), fetch=False,
+                )
+
+        # Seed tech lead: ladanant023@gmail.com
+        tl_exists = db.execute_query(
+            "SELECT tech_id FROM technician_data WHERE tech_id='TECH009' LIMIT 1"
+        )
+        if not tl_exists:
+            db.execute_query(
+                "INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, tech_role, is_admin, org_id,"
+                " no_tickets_resolved, no_tickets_inprogress, available)"
+                " VALUES ('TECH009','Anant Lad (Lead)','ladanant023@gmail.com',%s,'tech_lead',FALSE,'ORG001',0,0,TRUE)"
+                " ON CONFLICT (tech_id) DO NOTHING",
+                (hash_password("EasyMT@Lead2024"),), fetch=False,
+            )
+            log.info("Auth seed: created tech lead TECH009 ladanant023@gmail.com")
 
         user_seeds = [
             ("USR001", "Anant SRTTC", "anant.221269@srttc.ai.in", "EasyMT@User221"),
@@ -130,10 +194,15 @@ def _seed_auth_credentials(db):
             )
             if not existing:
                 db.execute_query(
-                    "INSERT INTO user_data (user_id, user_name, user_mail, user_password, no_tickets_raised, available)"
-                    " VALUES (%s,%s,%s,%s,0,TRUE)",
+                    "INSERT INTO user_data (user_id, user_name, user_mail, user_password, no_tickets_raised, available, org_id)"
+                    " VALUES (%s,%s,%s,%s,0,TRUE,'ORG001')",
                     (user_id, name, email, hash_password(pwd)), fetch=False,
                 )
                 log.info("Auth seed: created user %s (%s)", user_id, email)
+            else:
+                db.execute_query(
+                    "UPDATE user_data SET org_id='ORG001' WHERE user_id=%s AND org_id IS NULL",
+                    (user_id,), fetch=False,
+                )
     except Exception as e:
         log.warning("Auth credential seed skipped: %s", e)

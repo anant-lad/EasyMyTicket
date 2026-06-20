@@ -1,13 +1,14 @@
 """
 Ticket creation and intake classification routes
 """
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Depends
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.picklist_loader import get_picklist_loader
+from src.auth.dependencies import get_current_user, require_tech, require_tech_lead, optional_user
 
 router = APIRouter()
 
@@ -499,3 +500,311 @@ def get_feedback(ticket_number: str):
         (ticket_number,),
     )
     return {"ticket_number": ticket_number, "feedback": rows or []}
+
+
+# ── My Tickets (filtered by current user/tech) ────────────────────────────────
+
+@router.get("/tickets/my", tags=["tickets"])
+def get_my_tickets(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    payload: dict = Depends(get_current_user),
+):
+    """Return tickets for the currently logged-in user or technician."""
+    db = get_db_connection()
+    role = payload.get("role", "")
+    uid = payload.get("sub", "")
+
+    if role == "user":
+        base = "SELECT * FROM new_tickets WHERE user_id=%s"
+        params: list = [uid]
+    else:
+        base = "SELECT * FROM new_tickets WHERE assigned_tech_id=%s"
+        params = [uid]
+
+    if status_filter:
+        base += " AND status=%s"
+        params.append(status_filter)
+
+    base += " ORDER BY createdate DESC LIMIT %s"
+    params.append(limit)
+
+    rows = db.execute_query(base, tuple(params)) or []
+    tickets = []
+    for r in rows:
+        t = dict(r)
+        for k, v in t.items():
+            if isinstance(v, datetime):
+                t[k] = v.isoformat()
+        tickets.append(t)
+    return {"success": True, "tickets": tickets, "total": len(tickets)}
+
+
+# ── Ticket Status Update ──────────────────────────────────────────────────────
+
+class StatusUpdateRequest(BaseModel):
+    status: str  # e.g. "In Progress", "Resolved", "Closed"
+
+
+@router.patch("/tickets/{ticket_number}/status", tags=["tickets"])
+def update_ticket_status(
+    ticket_number: str,
+    req: StatusUpdateRequest,
+    payload: dict = Depends(require_tech),
+):
+    """Technician updates ticket status."""
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT ticketnumber, assigned_tech_id, status FROM new_tickets WHERE ticketnumber=%s",
+        (ticket_number,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    tech_id = payload.get("sub")
+    role = payload.get("role")
+    ticket = rows[0]
+
+    if role not in ("admin", "tech_lead") and ticket.get("assigned_tech_id") != tech_id:
+        raise HTTPException(status_code=403, detail="You can only update tickets assigned to you")
+
+    picklist_loader = get_picklist_loader()
+    status_val = picklist_loader.get_value("status", req.status) or req.status
+
+    extra = {}
+    if req.status in ("Resolved", "Closed"):
+        extra["resolveddatetime"] = datetime.now()
+
+    set_clause = "status=%s"
+    params = [status_val]
+    if extra.get("resolveddatetime"):
+        set_clause += ", resolveddatetime=%s"
+        params.append(extra["resolveddatetime"])
+    params.append(ticket_number)
+
+    db.execute_query(f"UPDATE new_tickets SET {set_clause} WHERE ticketnumber=%s", tuple(params), fetch=False)
+
+    # Add system comment
+    db.execute_query(
+        "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content, is_internal)"
+        " VALUES (%s, %s, 'system', 'System', %s, FALSE)",
+        (ticket_number, tech_id, f"Status changed to {req.status}"),
+        fetch=False,
+    )
+
+    return {"success": True, "message": f"Status updated to {req.status}"}
+
+
+# ── Ticket Reassign (tech lead only) ─────────────────────────────────────────
+
+class ReassignRequest(BaseModel):
+    new_tech_id: str
+    reason: Optional[str] = None
+
+
+@router.post("/tickets/{ticket_number}/reassign", tags=["tickets"])
+def reassign_ticket(
+    ticket_number: str,
+    req: ReassignRequest,
+    payload: dict = Depends(require_tech_lead),
+):
+    """Tech lead reassigns ticket to another technician."""
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT ticketnumber, assigned_tech_id FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Verify new tech exists
+    tech_rows = db.execute_query(
+        "SELECT tech_id, tech_name FROM technician_data WHERE tech_id=%s LIMIT 1", (req.new_tech_id,)
+    )
+    if not tech_rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+
+    old_tech_id = rows[0].get("assigned_tech_id")
+    new_tech_name = tech_rows[0].get("tech_name", req.new_tech_id)
+
+    db.execute_query(
+        "UPDATE new_tickets SET assigned_tech_id=%s WHERE ticketnumber=%s",
+        (req.new_tech_id, ticket_number), fetch=False,
+    )
+
+    # Adjust workloads
+    if old_tech_id:
+        db.execute_query(
+            "UPDATE technician_data SET no_tickets_inprogress=GREATEST(0,no_tickets_inprogress-1) WHERE tech_id=%s",
+            (old_tech_id,), fetch=False,
+        )
+    db.execute_query(
+        "UPDATE technician_data SET no_tickets_inprogress=no_tickets_inprogress+1 WHERE tech_id=%s",
+        (req.new_tech_id,), fetch=False,
+    )
+
+    note = req.reason or "Reassigned by tech lead"
+    db.execute_query(
+        "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content, is_internal)"
+        " VALUES (%s,%s,'system','System',%s,TRUE)",
+        (ticket_number, payload.get("sub"), f"Ticket reassigned to {new_tech_name}. Reason: {note}"),
+        fetch=False,
+    )
+
+    return {"success": True, "message": f"Ticket reassigned to {new_tech_name}"}
+
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+
+class CommentRequest(BaseModel):
+    content: str
+    is_internal: bool = False  # tech-only note (not visible to user)
+
+
+@router.get("/tickets/{ticket_number}/comments", tags=["tickets"])
+def get_comments(
+    ticket_number: str,
+    payload: Optional[dict] = Depends(optional_user),
+):
+    db = get_db_connection()
+    is_tech = payload and payload.get("role") in ("tech", "tech_lead", "admin")
+
+    if is_tech:
+        rows = db.execute_query(
+            "SELECT * FROM ticket_comments WHERE ticket_number=%s ORDER BY created_at ASC",
+            (ticket_number,),
+        )
+    else:
+        rows = db.execute_query(
+            "SELECT * FROM ticket_comments WHERE ticket_number=%s AND is_internal=FALSE ORDER BY created_at ASC",
+            (ticket_number,),
+        )
+
+    comments = []
+    for r in (rows or []):
+        c = dict(r)
+        if isinstance(c.get("created_at"), datetime):
+            c["created_at"] = c["created_at"].isoformat()
+        comments.append(c)
+    return {"ticket_number": ticket_number, "comments": comments}
+
+
+@router.post("/tickets/{ticket_number}/comments", tags=["tickets"])
+def add_comment(
+    ticket_number: str,
+    req: CommentRequest,
+    payload: dict = Depends(get_current_user),
+):
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT ticketnumber FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    role = payload.get("role", "")
+    author_type = "tech" if role in ("tech", "tech_lead", "admin") else "user"
+    is_internal = req.is_internal and author_type == "tech"
+
+    db.execute_query(
+        "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content, is_internal)"
+        " VALUES (%s,%s,%s,%s,%s,%s)",
+        (ticket_number, payload["sub"], author_type, payload.get("name", ""), req.content, is_internal),
+        fetch=False,
+    )
+    return {"success": True, "message": "Comment added"}
+
+
+# ── Re-raise Ticket ───────────────────────────────────────────────────────────
+
+class ReraiseRequest(BaseModel):
+    reason: str = "Issue not resolved"
+
+
+@router.post("/tickets/{ticket_number}/reraise", tags=["tickets"])
+def reraise_ticket(
+    ticket_number: str,
+    req: ReraiseRequest,
+    payload: dict = Depends(get_current_user),
+):
+    """User re-raises a resolved/closed ticket. Creates a new linked ticket."""
+    if payload.get("role") != "user":
+        raise HTTPException(status_code=403, detail="Only users can re-raise tickets")
+
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT * FROM new_tickets WHERE ticketnumber=%s LIMIT 1", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    original = rows[0]
+    if original.get("status") not in ("Resolved", "Closed", "3", "4"):
+        raise HTTPException(status_code=400, detail="Can only re-raise resolved or closed tickets")
+
+    # Create new ticket linked to original
+    import uuid
+    from datetime import datetime as dt
+    new_num = f"T{dt.now().strftime('%Y%m%d')}.{uuid.uuid4().hex[:6].upper()}"
+
+    db.execute_query(
+        "INSERT INTO new_tickets (ticketnumber, title, description, user_id, status, priority, source, parent_ticket, reraise_reason, createdate)"
+        " VALUES (%s,%s,%s,%s,'Open',%s,'portal',%s,%s,NOW())",
+        (
+            new_num,
+            f"[RE-RAISE] {original.get('title','')}"[:200],
+            f"{req.reason}\n\nOriginal ticket: {ticket_number}\n\n{original.get('description','')}",
+            payload["sub"],
+            original.get("priority", "Medium"),
+            ticket_number,
+            req.reason,
+        ),
+        fetch=False,
+    )
+
+    return {"success": True, "new_ticket_number": new_num, "message": "Ticket re-raised successfully"}
+
+
+# ── Similar Tickets (for tech AI assist) ─────────────────────────────────────
+
+@router.get("/tickets/similar", tags=["tickets"])
+def get_similar_tickets(
+    title: str = Query(..., description="Ticket title to search for similar"),
+    description: str = Query("", description="Ticket description"),
+    limit: int = Query(5, ge=1, le=20),
+    payload: dict = Depends(require_tech),
+):
+    """Return similar resolved tickets for technician AI assistance."""
+    db = get_db_connection()
+    search_text = f"{title} {description}".strip()[:200]
+
+    rows = db.execute_query(
+        """SELECT ticketnumber, title, description, resolution, issuetype, priority, status
+           FROM new_tickets
+           WHERE resolution IS NOT NULL
+             AND status IN ('Resolved','Closed','3','4')
+             AND (title ILIKE %s OR description ILIKE %s)
+           ORDER BY createdate DESC
+           LIMIT %s""",
+        (f"%{title[:50]}%", f"%{title[:50]}%", limit),
+    )
+    tickets = []
+    for r in (rows or []):
+        t = dict(r)
+        for k, v in t.items():
+            if isinstance(v, datetime):
+                t[k] = v.isoformat()
+        tickets.append(t)
+    return {"success": True, "similar_tickets": tickets, "count": len(tickets)}
+
+
+# ── List Technicians (for reassign dropdown) ──────────────────────────────────
+
+@router.get("/tickets/technicians", tags=["tickets"])
+def list_active_technicians(payload: dict = Depends(require_tech)):
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT tech_id, tech_name, tech_mail, tech_role, no_tickets_inprogress FROM technician_data"
+        " WHERE available=TRUE ORDER BY tech_name"
+    ) or []
+    techs = [dict(r) for r in rows]
+    return {"success": True, "technicians": techs}

@@ -29,6 +29,8 @@ class CreateTechRequest(BaseModel):
     password: str
     skills: Optional[str] = ""
     is_admin: Optional[bool] = False
+    tech_role: Optional[str] = "tech"
+    org_id: Optional[str] = None
 
 class UpdateTechRequest(BaseModel):
     tech_name: Optional[str] = None
@@ -37,6 +39,16 @@ class UpdateTechRequest(BaseModel):
     skills: Optional[str] = None
     status: Optional[str] = None
     is_admin: Optional[bool] = None
+    tech_role: Optional[str] = None
+    org_id: Optional[str] = None
+
+class CreateOrgRequest(BaseModel):
+    org_id: str
+    org_name: str
+
+class AddMemberRequest(BaseModel):
+    member_id: str
+    member_type: str  # 'user' or 'tech'
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 
@@ -108,10 +120,10 @@ def create_technician(req: CreateTechRequest, _: dict = Depends(require_admin)):
     if existing:
         raise HTTPException(status_code=409, detail="Tech ID or email already exists")
     db.execute_query(
-        "INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, status, is_admin, "
-        "no_tickets_assigned, solved_tickets, current_workload) VALUES (%s,%s,%s,%s,%s,'available',%s,0,0,0)",
+        "INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, status, is_admin, tech_role, org_id,"
+        "no_tickets_assigned, solved_tickets, current_workload) VALUES (%s,%s,%s,%s,%s,'available',%s,%s,%s,0,0,0)",
         (req.tech_id, req.tech_name, req.tech_mail, hash_password(req.password),
-         req.skills, req.is_admin),
+         req.skills, req.is_admin, req.tech_role or "tech", req.org_id),
         fetch=False,
     )
     return {"message": "Technician created", "tech_id": req.tech_id}
@@ -133,6 +145,10 @@ def update_technician(tech_id: str, req: UpdateTechRequest, _: dict = Depends(re
         sets.append("status=%s"); vals.append(req.status)
     if req.is_admin is not None:
         sets.append("is_admin=%s"); vals.append(req.is_admin)
+    if req.tech_role is not None:
+        sets.append("tech_role=%s"); vals.append(req.tech_role)
+    if req.org_id is not None:
+        sets.append("org_id=%s"); vals.append(req.org_id)
     if not sets:
         raise HTTPException(status_code=400, detail="Nothing to update")
     vals.append(tech_id)
@@ -144,3 +160,54 @@ def update_technician(tech_id: str, req: UpdateTechRequest, _: dict = Depends(re
 def delete_technician(tech_id: str, _: dict = Depends(require_admin)):
     db = DatabaseConnection()
     db.execute_query("DELETE FROM technician_data WHERE tech_id=%s", (tech_id,), fetch=False)
+
+
+# ── Organizations ──────────────────────────────────────────────────────────────
+
+@router.get("/organizations")
+def list_organizations(_: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    orgs = db.execute_query("SELECT * FROM organizations ORDER BY org_name") or []
+    result = []
+    for o in orgs:
+        od = dict(o)
+        users = db.execute_query(
+            "SELECT user_id, user_name, user_mail FROM user_data WHERE org_id=%s", (od["org_id"],)
+        ) or []
+        techs = db.execute_query(
+            "SELECT tech_id, tech_name, tech_mail, tech_role FROM technician_data WHERE org_id=%s", (od["org_id"],)
+        ) or []
+        od["users"] = [dict(u) for u in users]
+        od["technicians"] = [dict(t) for t in techs]
+        result.append(od)
+    return {"organizations": result}
+
+
+@router.post("/organizations", status_code=201)
+def create_organization(req: CreateOrgRequest, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    existing = db.execute_query("SELECT org_id FROM organizations WHERE org_id=%s LIMIT 1", (req.org_id,))
+    if existing:
+        raise HTTPException(status_code=409, detail="Organization ID already exists")
+    db.execute_query(
+        "INSERT INTO organizations (org_id, org_name) VALUES (%s,%s)",
+        (req.org_id, req.org_name), fetch=False,
+    )
+    return {"message": "Organization created", "org_id": req.org_id}
+
+
+@router.post("/organizations/{org_id}/members", status_code=200)
+def add_member_to_org(org_id: str, req: AddMemberRequest, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    org = db.execute_query("SELECT org_id FROM organizations WHERE org_id=%s LIMIT 1", (org_id,))
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    if req.member_type == "user":
+        db.execute_query("UPDATE user_data SET org_id=%s WHERE user_id=%s", (org_id, req.member_id), fetch=False)
+    elif req.member_type == "tech":
+        db.execute_query("UPDATE technician_data SET org_id=%s WHERE tech_id=%s", (org_id, req.member_id), fetch=False)
+    else:
+        raise HTTPException(status_code=400, detail="member_type must be 'user' or 'tech'")
+
+    return {"message": f"{req.member_type} {req.member_id} added to organization {org_id}"}

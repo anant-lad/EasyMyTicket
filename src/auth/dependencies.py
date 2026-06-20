@@ -20,8 +20,14 @@ def get_current_user(payload: Optional[dict] = Depends(_get_token)) -> dict:
 
 
 def require_tech(payload: dict = Depends(get_current_user)) -> dict:
-    if payload.get("role") not in ("tech", "admin"):
+    if payload.get("role") not in ("tech", "tech_lead", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Technician access required")
+    return payload
+
+
+def require_tech_lead(payload: dict = Depends(get_current_user)) -> dict:
+    if payload.get("role") not in ("tech_lead", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tech Lead access required")
     return payload
 
 

@@ -29,7 +29,7 @@ def login(req: LoginRequest):
 
     # Try technician first
     tech_rows = db.execute_query(
-        "SELECT tech_id, tech_name, tech_mail, tech_password, is_admin FROM technician_data WHERE tech_mail = %s LIMIT 1",
+        "SELECT tech_id, tech_name, tech_mail, tech_password, is_admin, tech_role FROM technician_data WHERE tech_mail = %s LIMIT 1",
         (req.email,),
     )
     if tech_rows:
@@ -38,7 +38,12 @@ def login(req: LoginRequest):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Password not set for this account")
         if not verify_password(req.password, tech["tech_password"]):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-        role = "admin" if tech.get("is_admin") else "tech"
+        if tech.get("is_admin"):
+            role = "admin"
+        elif tech.get("tech_role") == "tech_lead":
+            role = "tech_lead"
+        else:
+            role = "tech"
         token = create_access_token(tech["tech_id"], tech["tech_mail"], role, tech["tech_name"])
         return LoginResponse(
             access_token=token, role=role,
