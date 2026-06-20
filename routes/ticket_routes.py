@@ -832,15 +832,29 @@ def reraise_ticket(
 
 def _get_similar_tickets_impl(title, description, limit, payload):
     db = get_db_connection()
+    # Extract meaningful keywords (skip common stop words)
+    _STOP = {"a","an","the","is","it","in","on","for","to","of","and","or","not","with",
+              "my","me","i","we","our","has","have","was","been","are","be","do","can",
+              "this","that","at","by","from","into","after","when","keep","keeps"}
+    words = [w.strip(".,!?") for w in title.split() if len(w) > 2 and w.lower() not in _STOP]
+    if not words:
+        words = title.split()[:3]
+    # Build OR condition across keywords for both title and description
+    kw_list = words[:8]  # cap at 8 keywords
+    conditions = " OR ".join(["(title ILIKE %s OR description ILIKE %s)"] * len(kw_list))
+    params = []
+    for w in kw_list:
+        params += [f"%{w}%", f"%{w}%"]
+    params.append(limit)
     rows = db.execute_query(
-        """SELECT ticketnumber, title, description, resolution, issuetype, priority, status
+        f"""SELECT ticketnumber, title, description, resolution, issuetype, priority, status
            FROM new_tickets
            WHERE resolution IS NOT NULL
              AND status IN ('Resolved','Closed','3','4')
-             AND (title ILIKE %s OR description ILIKE %s)
+             AND ({conditions})
            ORDER BY createdate DESC
            LIMIT %s""",
-        (f"%{title[:50]}%", f"%{title[:50]}%", limit),
+        tuple(params),
     )
     tickets = []
     for r in (rows or []):
