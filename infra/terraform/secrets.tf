@@ -32,13 +32,5 @@ resource "aws_secretsmanager_secret" "api_keys" {
   tags                    = local.common_tags
 }
 
-resource "aws_secretsmanager_secret" "app_config" {
-  name                    = "/${var.project_name}/${var.environment}/app-config"
-  description             = "App-level config secrets: jwt_secret, support_email"
-  recovery_window_in_days = 7
-  tags                    = local.common_tags
-}
-
 # DB credentials are managed by RDS itself via manage_master_user_password = true
 # RDS will store them at: /rds!db-<id>/ticketing_admin automatically
-# The app reads the password via RDS_SECRET_ARN in the ConfigMap (see k8s/configmap.yaml)

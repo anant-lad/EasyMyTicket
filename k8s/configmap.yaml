@@ -39,6 +39,3 @@ data:
   OBSERVABILITY_PROVIDER: "custom"
   LANGFUSE_HOST: "https://cloud.langfuse.com"
   S3_EXPORTS_BUCKET: "ticketing-prod-exports-808812816838"
-  # ARN of the RDS-managed master-user secret (fill with: aws rds describe-db-instances
-  # --region ap-south-1 --query "DBInstances[0].MasterUserSecret.SecretArn" --output text)
-  RDS_SECRET_ARN: ""
