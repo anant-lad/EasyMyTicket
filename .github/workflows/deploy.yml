@@ -163,12 +163,24 @@ jobs:
           kubectl apply -f k8s/configmap.yaml
           kubectl apply -f k8s/serviceaccount.yaml
 
+      - name: Clear stuck terminating pods
+        run: |
+          echo "=== Current pod state ==="
+          kubectl get pods -n ticketing || true
+          echo "=== Force-deleting any stuck Terminating pods ==="
+          kubectl get pods -n ticketing --no-headers \
+            | awk '/Terminating/{print $1}' \
+            | xargs -r -I{} kubectl delete pod {} -n ticketing --grace-period=0 --force 2>/dev/null || true
+          kubectl delete pods -n ticketing --field-selector=status.phase=Failed --grace-period=0 --force 2>/dev/null || true
+          echo "=== Pod state after cleanup ==="
+          kubectl get pods -n ticketing || true
+
       - name: Roll out new API image
         run: |
           kubectl set image deployment/ticketing-api \
             ticketing-api=${{ needs.build-api.outputs.image }} \
             -n ticketing
-          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=5m
+          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=8m
 
       - name: Roll out new worker image
         run: |
@@ -176,7 +188,7 @@ jobs:
           kubectl set image deployment/ticket-worker \
             ticket-worker="$WORKER_IMAGE" \
             -n ticketing
-          kubectl rollout status deployment/ticket-worker -n ticketing --timeout=5m
+          kubectl rollout status deployment/ticket-worker -n ticketing --timeout=8m
 
       - name: Verify deployment
         run: |
