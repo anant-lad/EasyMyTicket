@@ -597,34 +597,66 @@ def get_feedback(ticket_number: str):
 
 # ── My Tickets (filtered by current user/tech) ────────────────────────────────
 
+def _serialize_row(r: dict) -> dict:
+    """Convert non-JSON-serializable DB types to plain Python types."""
+    import decimal, uuid as _uuid
+    from datetime import date
+    t = {}
+    for k, v in r.items():
+        if v is None:
+            t[k] = None
+        elif isinstance(v, datetime):
+            t[k] = v.isoformat()
+        elif isinstance(v, date):
+            t[k] = v.isoformat()
+        elif isinstance(v, decimal.Decimal):
+            t[k] = float(v)
+        elif isinstance(v, _uuid.UUID):
+            t[k] = str(v)
+        elif isinstance(v, (bytes, memoryview)):
+            t[k] = None
+        else:
+            t[k] = v
+    return t
+
+
+log = logging.getLogger(__name__)
+
+
 def _get_my_tickets_impl(status_filter, limit, payload):
-    db = get_db_connection()
-    role = payload.get("role", "")
-    uid = payload.get("sub", "")
+    try:
+        db = get_db_connection()
+        role = payload.get("role", "")
+        uid = payload.get("sub", "")
 
-    if role == "user":
-        base = "SELECT * FROM new_tickets WHERE user_id=%s"
-        params: list = [uid]
-    else:
-        base = "SELECT * FROM new_tickets WHERE assigned_tech_id=%s"
-        params = [uid]
+        if role == "user":
+            base = (
+                "SELECT ticketnumber, title, description, status, priority, issuetype, "
+                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
+                "FROM new_tickets WHERE user_id=%s"
+            )
+            params: list = [uid]
+        else:
+            base = (
+                "SELECT ticketnumber, title, description, status, priority, issuetype, "
+                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
+                "FROM new_tickets WHERE assigned_tech_id=%s"
+            )
+            params = [uid]
 
-    if status_filter:
-        base += " AND status=%s"
-        params.append(status_filter)
+        if status_filter:
+            base += " AND status=%s"
+            params.append(status_filter)
 
-    base += " ORDER BY createdate DESC LIMIT %s"
-    params.append(limit)
+        base += " ORDER BY createdate DESC LIMIT %s"
+        params.append(limit)
 
-    rows = db.execute_query(base, tuple(params)) or []
-    tickets = []
-    for r in rows:
-        t = dict(r)
-        for k, v in t.items():
-            if isinstance(v, datetime):
-                t[k] = v.isoformat()
-        tickets.append(t)
-    return {"success": True, "tickets": tickets, "total": len(tickets)}
+        rows = db.execute_query(base, tuple(params)) or []
+        tickets = [_serialize_row(dict(r)) for r in rows]
+        return {"success": True, "tickets": tickets, "total": len(tickets)}
+    except Exception as exc:
+        log.error("GET /tickets/my failed for uid=%s role=%s: %s", payload.get("sub"), payload.get("role"), exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to load tickets: {exc}")
 
 
 @router.get("/tickets/my", tags=["tickets"])
