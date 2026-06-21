@@ -400,6 +400,17 @@ class NotificationAgent:
                             </p>
                           </div>"""
                     else:
+                        tech_name_for_user = "A technician"
+                        if assigned_tech_id:
+                            try:
+                                _tr = db.execute_query(
+                                    "SELECT tech_name FROM technician_data WHERE tech_id=%s LIMIT 1",
+                                    (assigned_tech_id,),
+                                )
+                                if _tr:
+                                    tech_name_for_user = _tr[0].get("tech_name", "A technician")
+                            except Exception:
+                                pass
                         status_block = f"""
                           <div style="margin-top:20px;padding:16px 20px;background:#eff6ff;
                                       border:1px solid #bfdbfe;border-radius:8px;">
@@ -407,7 +418,8 @@ class NotificationAgent:
                               👨‍💻 Technician Assigned
                             </p>
                             <p style="margin:6px 0 0;font-size:13px;color:#1e40af;line-height:1.6;">
-                              A technician has been assigned to your ticket and will reach out shortly.
+                              <strong>{tech_name_for_user}</strong> has been assigned to your ticket
+                              and will reach out shortly.
                             </p>
                           </div>"""
 

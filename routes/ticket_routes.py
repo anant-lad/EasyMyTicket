@@ -663,33 +663,27 @@ def _get_my_tickets_impl(status_filter, limit, payload):
         role = payload.get("role", "")
         uid = payload.get("sub", "")
 
+        _select = (
+            "SELECT t.ticketnumber, t.title, t.description, t.status, t.priority, t.issuetype, "
+            "t.createdate, t.resolveddatetime, t.assigned_tech_id, t.source, t.user_id, "
+            "td.tech_name AS assigned_tech_name "
+            "FROM new_tickets t LEFT JOIN technician_data td ON td.tech_id=t.assigned_tech_id"
+        )
         if role == "user":
-            base = (
-                "SELECT ticketnumber, title, description, status, priority, issuetype, "
-                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
-                "FROM new_tickets WHERE user_id=%s"
-            )
+            base = _select + " WHERE t.user_id=%s"
             params: list = [uid]
         elif role in ("tech_lead", "admin"):
-            base = (
-                "SELECT ticketnumber, title, description, status, priority, issuetype, "
-                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
-                "FROM new_tickets WHERE 1=1"
-            )
+            base = _select + " WHERE 1=1"
             params = []
         else:
-            base = (
-                "SELECT ticketnumber, title, description, status, priority, issuetype, "
-                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
-                "FROM new_tickets WHERE assigned_tech_id=%s"
-            )
+            base = _select + " WHERE t.assigned_tech_id=%s"
             params = [uid]
 
         if status_filter:
-            base += " AND status=%s"
+            base += " AND t.status=%s"
             params.append(status_filter)
 
-        base += " ORDER BY createdate DESC LIMIT %s"
+        base += " ORDER BY t.createdate DESC LIMIT %s"
         params.append(limit)
 
         rows = db.execute_query(base, tuple(params)) or []
@@ -753,6 +747,15 @@ def update_ticket_status(
     params.append(ticket_number)
 
     db.execute_query(f"UPDATE new_tickets SET {set_clause} WHERE ticketnumber=%s", tuple(params), fetch=False)
+
+    # Decrement workload when ticket is resolved or closed
+    if req.status in ("Resolved", "Closed") and ticket.get("assigned_tech_id"):
+        db.execute_query(
+            "UPDATE technician_data SET current_workload=GREATEST(0,current_workload-1),"
+            " solved_tickets=solved_tickets+1 WHERE tech_id=%s",
+            (ticket["assigned_tech_id"],),
+            fetch=False,
+        )
 
     # Add system comment
     db.execute_query(

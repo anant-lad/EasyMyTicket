@@ -1,14 +1,16 @@
 """
-Technician Assistance Routes
+Technician Assistance Routes + Availability / Attendance
 """
 import io
 import base64
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, File, Form, HTTPException, Depends, UploadFile
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from src.database.db_connection import DatabaseConnection
 from src.agents.technician_assistant import TechnicianAssistantAgent
+from src.auth.dependencies import require_tech
 
 log = logging.getLogger(__name__)
 
@@ -148,3 +150,151 @@ async def assist_technician(
     except Exception as e:
         log.error("Error in technician assistance: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Technician Availability / Attendance ──────────────────────────────────────
+
+VALID_STATUSES = ("available", "wfh", "on_leave", "half_day", "offline", "out_of_office", "away", "busy")
+
+STATUS_LABELS = {
+    "available":    "Available",
+    "wfh":          "Working from Home",
+    "on_leave":     "On Leave",
+    "half_day":     "Half Day",
+    "offline":      "Offline",
+    "out_of_office": "Out of Office",
+    "away":         "Away",
+    "busy":         "Busy",
+}
+
+
+class AvailabilityUpdateRequest(BaseModel):
+    status: str
+    notes: Optional[str] = None
+    action: Optional[str] = None  # "punch_in" | "punch_out" | "status_change"
+
+
+@router.get("/me/availability")
+def get_my_availability(payload: dict = Depends(require_tech)):
+    """Return current technician's status and today's attendance record."""
+    tech_id = payload.get("sub")
+    db = get_db_connection()
+
+    rows = db.execute_query(
+        "SELECT tech_id, tech_name, status, current_workload FROM technician_data WHERE tech_id=%s LIMIT 1",
+        (tech_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    tech = rows[0]
+
+    today = datetime.now(timezone.utc).date()
+    att_rows = db.execute_query(
+        "SELECT id, date, punch_in, punch_out, status, notes FROM technician_attendance "
+        "WHERE tech_id=%s AND date=%s ORDER BY id DESC LIMIT 1",
+        (tech_id, today),
+    )
+    attendance = att_rows[0] if att_rows else None
+
+    return {
+        "tech_id": tech["tech_id"],
+        "tech_name": tech["tech_name"],
+        "status": tech["status"],
+        "status_label": STATUS_LABELS.get(tech["status"], tech["status"]),
+        "current_workload": tech["current_workload"],
+        "today": {
+            "punch_in":  attendance["punch_in"].isoformat() if attendance and attendance.get("punch_in") else None,
+            "punch_out": attendance["punch_out"].isoformat() if attendance and attendance.get("punch_out") else None,
+            "status":    attendance["status"] if attendance else None,
+            "notes":     attendance["notes"] if attendance else None,
+        } if attendance else None,
+    }
+
+
+@router.patch("/me/availability")
+def update_my_availability(req: AvailabilityUpdateRequest, payload: dict = Depends(require_tech)):
+    """Update technician availability status and optionally punch in/out."""
+    if req.status not in VALID_STATUSES:
+        raise HTTPException(status_code=422, detail=f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
+
+    tech_id = payload.get("sub")
+    db = get_db_connection()
+
+    # Update technician status
+    db.execute_query(
+        "UPDATE technician_data SET status=%s WHERE tech_id=%s",
+        (req.status, tech_id),
+        fetch=False,
+    )
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    # Fetch or create today's attendance record
+    att_rows = db.execute_query(
+        "SELECT id, punch_in, punch_out FROM technician_attendance WHERE tech_id=%s AND date=%s ORDER BY id DESC LIMIT 1",
+        (tech_id, today),
+    )
+
+    action = req.action or ("punch_in" if req.status == "available" and not att_rows else "status_change")
+
+    if not att_rows:
+        # First check-in today
+        punch_in = now if req.status == "available" else None
+        db.execute_query(
+            "INSERT INTO technician_attendance (tech_id, date, punch_in, status, notes) VALUES (%s,%s,%s,%s,%s)",
+            (tech_id, today, punch_in, req.status, req.notes),
+            fetch=False,
+        )
+    else:
+        att = att_rows[0]
+        if action == "punch_in" and not att.get("punch_in"):
+            db.execute_query(
+                "UPDATE technician_attendance SET punch_in=%s, status=%s, notes=%s WHERE id=%s",
+                (now, req.status, req.notes, att["id"]),
+                fetch=False,
+            )
+        elif action == "punch_out":
+            db.execute_query(
+                "UPDATE technician_attendance SET punch_out=%s, status=%s, notes=%s WHERE id=%s",
+                (now, req.status, req.notes, att["id"]),
+                fetch=False,
+            )
+        else:
+            db.execute_query(
+                "UPDATE technician_attendance SET status=%s, notes=%s WHERE id=%s",
+                (req.status, req.notes, att["id"]),
+                fetch=False,
+            )
+
+    return {
+        "success": True,
+        "status": req.status,
+        "status_label": STATUS_LABELS.get(req.status, req.status),
+        "message": f"Status updated to {STATUS_LABELS.get(req.status, req.status)}",
+    }
+
+
+@router.get("/me/attendance")
+def get_my_attendance(payload: dict = Depends(require_tech)):
+    """Return last 14 days of attendance records for the current technician."""
+    tech_id = payload.get("sub")
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT date, punch_in, punch_out, status, notes FROM technician_attendance "
+        "WHERE tech_id=%s AND date >= CURRENT_DATE - INTERVAL '14 days' ORDER BY date DESC",
+        (tech_id,),
+    )
+    return {
+        "attendance": [
+            {
+                "date":      str(r["date"]),
+                "punch_in":  r["punch_in"].isoformat() if r.get("punch_in") else None,
+                "punch_out": r["punch_out"].isoformat() if r.get("punch_out") else None,
+                "status":    r["status"],
+                "status_label": STATUS_LABELS.get(r["status"], r["status"]),
+                "notes":     r.get("notes"),
+            }
+            for r in rows
+        ]
+    }

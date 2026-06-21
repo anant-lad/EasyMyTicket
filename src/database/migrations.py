@@ -137,6 +137,21 @@ _MIGRATIONS = [
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_tech_id TEXT",
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_tech_name TEXT",
     "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS oversight_notified_at TIMESTAMPTZ",
+
+    # E15: technician attendance / availability log
+    (
+        "CREATE TABLE IF NOT EXISTS technician_attendance ("
+        "id BIGSERIAL PRIMARY KEY, "
+        "tech_id TEXT NOT NULL REFERENCES technician_data(tech_id), "
+        "date DATE NOT NULL DEFAULT CURRENT_DATE, "
+        "punch_in TIMESTAMPTZ, "
+        "punch_out TIMESTAMPTZ, "
+        "status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ("
+        "  'available','wfh','on_leave','half_day','offline','out_of_office','away','busy')), "
+        "notes TEXT, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_attendance_tech_date ON technician_attendance(tech_id, date DESC)",
 ]
 
 
