@@ -7,10 +7,10 @@ data:
   # All non-secret configuration
   # Replace placeholders with actual Terraform outputs
   AWS_REGION: "ap-south-1"
-  DB_HOST: "ticketing-prod-postgres.cjq0y6uyg5xd.ap-south-1.rds.amazonaws.com"
+  DB_HOST: "emt-db.cjq0y6uyg5xd.ap-south-1.rds.amazonaws.com"
   DB_PORT: "5432"
   DB_NAME: "tickets_db"
-  DB_USER: "ticketing_admin"
+  DB_USER: "EMT_1"
   DB_SSL_MODE: "require"
   DB_POOL_MIN: "2"
   DB_POOL_MAX: "10"
