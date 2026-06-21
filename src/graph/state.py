@@ -30,6 +30,7 @@ class TicketState(TypedDict, total=False):
 
     # ── After auto_route_decision ─────────────────────────────────────────────
     can_auto_resolve: bool
+    auto_resolve_confidence: float       # 0.0–1.0 from routing LLM
     auto_command_type: Optional[str]     # e.g. "flush_dns", "clear_temp"
     auto_command_payload: Optional[Dict]
 

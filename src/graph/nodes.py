@@ -256,28 +256,39 @@ def classify_node(state: TicketState) -> Dict:
 _ROUTING_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessage(content=(
         "You are an IT support routing engine. "
-        "Decide if this ticket can be resolved by running commands/scripts on the user's device. "
-        "Reply ONLY with valid JSON — no prose, no markdown."
+        "Decide if this ticket can be resolved by a desktop automation agent running "
+        "shell commands, scripts, or system utilities on the user's machine. "
+        "Reply ONLY with valid JSON — no prose, no markdown fences."
     )),
     HumanMessage(content=(
         "Ticket:\n"
         "Title: {title}\n"
         "Description: {description}\n"
-        "Category: {category}\n\n"
-        "Can a desktop automation agent resolve this by running shell commands, "
-        "system utilities, CLI tools, or scripts on the user's machine?\n\n"
-        "Agent CAN handle: camera/audio/display issues, disk cleanup, service restarts, "
-        "driver reloads, network diagnostics, permission fixes, software install/update, "
-        "performance issues, printer/Bluetooth problems — anything diagnosable or fixable via CLI.\n\n"
-        "Agent CANNOT handle: password resets (identity verification needed), "
-        "physical hardware damage, policy/procurement decisions, multi-system incidents "
-        "requiring human judgment, account access that needs admin approval.\n\n"
+        "Category: {category}\n"
+        "Device OS: {device_os}\n\n"
+        "IMPORTANT INSTRUCTIONS:\n"
+        "1. Do NOT rely only on what the user says — reason about what the issue COULD be.\n"
+        "   Example: 'camera not working on Ubuntu' → almost certainly a driver/kernel module "
+        "   issue, even if the user didn't say 'software'. Set can_agent_solve=true.\n"
+        "2. If there is ANY plausible software pathway to diagnose or fix the issue "
+        "   (even if hardware is also possible), prefer can_agent_solve=true. "
+        "   The agent will diagnose first and escalate to human if it hits a dead end.\n"
+        "3. Only set can_agent_solve=false when the issue is DEFINITIVELY outside software "
+        "   reach (physical damage, procurement, identity verification, multi-system outages).\n\n"
+        "Agent CAN handle: camera/audio/display/Bluetooth/printer not working, "
+        "disk full, slow performance, service crashes, driver issues, network connectivity, "
+        "software installs/updates, permission errors, startup failures, "
+        "missing devices, high CPU/memory — anything where CLI, drivers, or config might help.\n\n"
+        "Agent CANNOT handle: password resets needing identity verification, "
+        "confirmed physical hardware damage (broken screen, liquid damage), "
+        "procurement/licensing decisions, account access needing admin approval, "
+        "multi-machine outages requiring on-site presence.\n\n"
         "Return:\n"
         "{{\n"
         '  "can_agent_solve": true or false,\n'
         '  "confidence": 0.0 to 1.0,\n'
-        '  "reasoning": "one sentence",\n'
-        '  "suggested_first_command": "command name or null"\n'
+        '  "reasoning": "one sentence explaining your decision",\n'
+        '  "suggested_first_command": "first diagnostic command or null"\n'
         "}}"
     )),
 ])
@@ -293,13 +304,26 @@ def auto_route_decision_node(state: TicketState) -> Dict:
     can_resolve = False
     cmd_type    = None
 
+    confidence = 0.0
     try:
+        # Fetch device OS from agent metadata if a device is connected
+        device_id  = state.get("device_id") or ""
+        device_os  = "Unknown"
+        if device_id:
+            try:
+                from routes.agent_routes import get_device_metadata
+                meta = get_device_metadata(device_id)
+                device_os = meta.get("os") or meta.get("platform") or "Unknown"
+            except Exception:
+                pass
+
         llm   = get_small_llm(callbacks)
         chain = _ROUTING_PROMPT | llm
         resp  = chain.invoke({
             "title":       state.get("title", ""),
             "description": state.get("description", ""),
             "category":    state.get("category", "general_inquiry"),
+            "device_os":   device_os,
         })
         result = _parse_json(resp.content) or {}
         can_resolve = bool(result.get("can_agent_solve", False))
@@ -307,8 +331,8 @@ def auto_route_decision_node(state: TicketState) -> Dict:
         reasoning   = result.get("reasoning", "")
         cmd_type    = result.get("suggested_first_command") or None
         log.info(
-            "LLM routing for %s: can_agent_solve=%s (%.0f%%) — %s",
-            state.get("ticket_number"), can_resolve, confidence * 100, reasoning,
+            "LLM routing for %s: can_agent_solve=%s (%.0f%%) device_os=%s — %s",
+            state.get("ticket_number"), can_resolve, confidence * 100, device_os, reasoning,
         )
     except Exception as e:
         log.warning("LLM routing failed, defaulting to human path: %s", e)
@@ -316,6 +340,7 @@ def auto_route_decision_node(state: TicketState) -> Dict:
 
     return {
         "can_auto_resolve": can_resolve,
+        "auto_resolve_confidence": confidence,
         "auto_command_type": cmd_type,
         "auto_command_payload": {},
         "agent_connected": False,

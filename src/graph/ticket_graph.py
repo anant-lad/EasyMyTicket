@@ -50,10 +50,17 @@ log = logging.getLogger(__name__)
 #  Conditional edge: route after auto_route_decision
 # ─────────────────────────────────────────────────────────────────────────────
 
+_AGENT_CONFIDENCE_THRESHOLD = 0.65
+
+
 def _route_after_decision(state: TicketState) -> str:
-    device_id = state.get("device_id", "")
-    # LLM must say it can resolve AND the device must be connected
-    if state.get("can_auto_resolve") and device_id:
+    device_id  = state.get("device_id", "")
+    confidence = state.get("auto_resolve_confidence", 0.0)
+    if (
+        state.get("can_auto_resolve")
+        and confidence >= _AGENT_CONFIDENCE_THRESHOLD
+        and device_id
+    ):
         from routes.agent_routes import is_agent_connected
         if is_agent_connected(device_id):
             return "agent_task"

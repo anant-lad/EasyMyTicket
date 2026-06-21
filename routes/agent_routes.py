@@ -46,6 +46,9 @@ _pending_approvals: Dict[str, asyncio.Future] = {}
 # Reverse mapping: user_id/tech_id → device_id (for auto-attaching device to tickets)
 _user_to_device: Dict[str, str] = {}
 
+# {device_id: dict} — device metadata from the register message (os, hostname, etc.)
+_agent_device_metadata: Dict[str, dict] = {}
+
 
 def is_agent_auto_mode(device_id: str) -> bool:
     """Return True if the connected agent for this device has auto mode enabled."""
@@ -119,6 +122,7 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                 device_info = msg.get("device", {})
                 auto = bool(device_info.get("auto_mode", False))
                 _agent_auto_mode[device_id] = auto
+                _agent_device_metadata[device_id] = device_info
                 log.info("Agent registered: device_id=%s os=%s hostname=%s auto_mode=%s",
                          device_id,
                          device_info.get("os", "?"),
@@ -232,6 +236,11 @@ def is_agent_connected(device_id: str) -> bool:
 def get_connected_device_for_user(user_id: str) -> str | None:
     """Return the device_id currently connected for this user, or None."""
     return _user_to_device.get(user_id)
+
+
+def get_device_metadata(device_id: str) -> dict:
+    """Return the device registration metadata (os, hostname, etc.) for a connected device."""
+    return _agent_device_metadata.get(device_id, {})
 
 
 @router.get("/api/agents/my-device", tags=["agent"])

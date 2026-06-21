@@ -175,9 +175,9 @@ jobs:
             --from-literal=REDIS_AUTH="${{ secrets.REDIS_AUTH }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply API deployment manifest (removes any manual patches)
+      - name: Apply API deployment manifest (server-side, removes any manual patches)
         run: |
-          kubectl apply -f k8s/api-deployment.yaml
+          kubectl apply -f k8s/api-deployment.yaml --server-side --force-conflicts
 
       - name: Clear stuck terminating pods
         run: |
