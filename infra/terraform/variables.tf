@@ -116,6 +116,12 @@ variable "rds_username" {
   default     = "ticketing_admin"
 }
 
+variable "rds_master_password" {
+  description = "RDS master password (static, rotation disabled)"
+  type        = string
+  sensitive   = true
+}
+
 variable "elasticache_node_type" {
   description = "ElastiCache node type"
   type        = string

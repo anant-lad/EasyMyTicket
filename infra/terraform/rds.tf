@@ -48,8 +48,7 @@ resource "aws_db_instance" "postgres" {
 
   db_name  = var.rds_db_name
   username = var.rds_username
-  # Password managed via Secrets Manager — set via AWS Console or CLI after apply
-  manage_master_user_password = true
+  password = var.rds_master_password
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
