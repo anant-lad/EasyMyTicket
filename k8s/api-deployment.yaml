@@ -34,8 +34,6 @@ spec:
           envFrom:
             - configMapRef:
                 name: ticketing-config
-            - secretRef:
-                name: ticketing-secrets
           resources:
             requests:
               cpu: 256m

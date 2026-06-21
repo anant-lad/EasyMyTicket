@@ -1,5 +1,6 @@
 """
 Centralized configuration — reads from env vars, with AWS Secrets Manager fallback.
+All sensitive values are sourced from Secrets Manager; no secrets in K8s secrets or CI.
 """
 import os
 import json
@@ -11,15 +12,15 @@ load_dotenv()
 log = logging.getLogger(__name__)
 
 
-def _load_secret(secret_name: str) -> dict:
-    """Fetch a secret from AWS Secrets Manager. Returns {} on any failure."""
+def _load_secret(secret_id: str) -> dict:
+    """Fetch a secret from AWS Secrets Manager by name or ARN. Returns {} on any failure."""
     try:
         import boto3
         client = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION", "ap-south-1"))
-        response = client.get_secret_value(SecretId=secret_name)
+        response = client.get_secret_value(SecretId=secret_id)
         return json.loads(response["SecretString"])
     except Exception as e:
-        log.debug("Secrets Manager fetch skipped for %s: %s", secret_name, e)
+        log.debug("Secrets Manager fetch skipped for %s: %s", secret_id, e)
         return {}
 
 
@@ -32,6 +33,27 @@ def _env_or_secret(env_key: str, secret_path: str, secret_field: str, default: s
     return secret.get(secret_field, default)
 
 
+def _get_db_password() -> str:
+    """
+    DB password resolution order:
+    1. DB_PASSWORD env var (local dev / CI override)
+    2. /ticketing/prod/db-credentials  (manual secret)
+    3. RDS-managed secret via RDS_SECRET_ARN env var (auto-rotates with RDS)
+    """
+    val = os.getenv("DB_PASSWORD", "")
+    if val:
+        return val
+    _sm_prefix = os.getenv("SECRETS_MANAGER_PREFIX", "/ticketing/prod")
+    secret = _load_secret(f"{_sm_prefix}/db-credentials")
+    if secret.get("password"):
+        return secret["password"]
+    # RDS_SECRET_ARN is set in the ConfigMap; IRSA already has /rds!* access
+    rds_arn = os.getenv("RDS_SECRET_ARN", "")
+    if rds_arn:
+        return _load_secret(rds_arn).get("password", "")
+    return ""
+
+
 _SM_PREFIX = os.getenv("SECRETS_MANAGER_PREFIX", "/ticketing/prod")
 
 
@@ -41,7 +63,7 @@ class Config:
     DB_PORT     = int(os.getenv("DB_PORT", 5432))
     DB_NAME     = os.getenv("DB_NAME", "tickets_db")
     DB_USER     = os.getenv("DB_USER", "ticketing_admin")
-    DB_PASSWORD = _env_or_secret("DB_PASSWORD", f"{_SM_PREFIX}/db-credentials", "password")
+    DB_PASSWORD = _get_db_password()
     DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", 2))
     DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", 10))
     DB_SSL_MODE = os.getenv("DB_SSL_MODE", "require")   # 'require' on RDS, 'disable' locally
@@ -76,7 +98,7 @@ class Config:
     SQS_ENABLED            = os.getenv("SQS_ENABLED", "true").lower() == "true"
 
     # ── Email ─────────────────────────────────────────────────────────────────
-    SUPPORT_EMAIL              = os.getenv("SUPPORT_EMAIL", "")
+    SUPPORT_EMAIL              = _env_or_secret("SUPPORT_EMAIL", f"{_SM_PREFIX}/app-config", "support_email")
     SUPPORT_EMAIL_APP_PASSWORD = _env_or_secret(
         "SUPPORT_EMAIL_APP_PASSWORD", f"{_SM_PREFIX}/email-credentials", "app_password"
     )
@@ -96,7 +118,7 @@ class Config:
 
     # ── API authentication ────────────────────────────────────────────────────
     API_KEYS_RAW = _env_or_secret("API_KEYS", f"{_SM_PREFIX}/api-keys", "keys")
-    JWT_SECRET   = os.getenv("JWT_SECRET", "changeme-set-a-strong-secret-in-production")
+    JWT_SECRET   = _env_or_secret("JWT_SECRET", f"{_SM_PREFIX}/app-config", "jwt_secret") or "changeme-set-a-strong-secret-in-production"
 
     @classmethod
     def get_valid_api_keys(cls) -> set:
