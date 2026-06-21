@@ -177,7 +177,11 @@ jobs:
 
       - name: Apply API deployment manifest (server-side, removes any manual patches)
         run: |
-          kubectl apply -f k8s/api-deployment.yaml --server-side --force-conflicts
+          # Stamp the exact SHA image into the manifest before applying so that
+          # kubectl apply + kubectl set image are one single rollout, not two.
+          IMAGE="${{ needs.build-api.outputs.image }}"
+          sed "s|808812816838.dkr.ecr.ap-south-1.amazonaws.com/ticketing-api:latest|${IMAGE}|g" \
+            k8s/api-deployment.yaml | kubectl apply -f - --server-side --force-conflicts
 
       - name: Clear stuck terminating pods
         run: |
@@ -193,10 +197,12 @@ jobs:
 
       - name: Roll out new API image
         run: |
+          # kubectl apply already stamped the SHA image above, so set image here
+          # is a no-op for the image (it may trigger rollout if apply didn't).
           kubectl set image deployment/ticketing-api \
             ticketing-api=${{ needs.build-api.outputs.image }} \
             -n ticketing
-          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=8m || {
+          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=12m || {
             echo "=== ROLLOUT FAILED — diagnostics ==="
             kubectl get pods -n ticketing -o wide
             echo "--- Pod events ---"

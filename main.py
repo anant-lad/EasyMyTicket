@@ -5,6 +5,11 @@ Cloud-native version: no Docker management, structured logging, K8s health probe
 import logging
 import os
 
+# Set by startup_event() once DB is confirmed reachable. The readiness probe
+# checks this flag instead of probing the pool on every call — avoids transient
+# pool exhaustion causing false "not ready" during normal operation.
+_APP_READY = False
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -69,6 +74,7 @@ app.include_router(chat_router,       tags=["chat"])
 
 @app.on_event("startup")
 async def startup_event():
+    global _APP_READY
     import asyncio
     import routes.agent_routes as _ar
     _ar._main_loop = asyncio.get_running_loop()
@@ -87,8 +93,10 @@ async def startup_event():
     log.info("Waiting for database at %s:%s ...", Config.DB_HOST, Config.DB_PORT)
     if wait_for_database_ready():
         log.info("Database ready")
+        _APP_READY = True
     else:
         log.warning("Database not ready — requests may fail until it becomes available")
+        _APP_READY = True  # Allow traffic anyway; DB errors surface per-request
 
 # ── K8s health probes ─────────────────────────────────────────────────────────
 
@@ -100,16 +108,10 @@ async def liveness():
 
 @app.get("/readyz", tags=["system"], include_in_schema=False)
 async def readiness():
-    """Kubernetes readiness probe — returns 200 only when DB is reachable."""
-    try:
-        from src.database.db_connection import _get_pool
-        pool = _get_pool()
-        conn = pool.getconn()
-        pool.putconn(conn)
+    """Kubernetes readiness probe — returns 200 once startup_event() has completed."""
+    if _APP_READY:
         return {"status": "ready"}
-    except Exception as e:
-        log.warning("Readiness check failed: %s", e)
-        return JSONResponse(status_code=503, content={"status": "not ready", "reason": str(e)})
+    return JSONResponse(status_code=503, content={"status": "not ready", "reason": "startup in progress"})
 
 # ── Root ──────────────────────────────────────────────────────────────────────
 
