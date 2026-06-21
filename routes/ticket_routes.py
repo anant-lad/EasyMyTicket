@@ -539,6 +539,40 @@ async def resolve_ticket(
         )
 
 
+# ── Delete Ticket (owner or admin) ───────────────────────────────────────────
+
+@router.delete("/tickets/{ticket_number}", tags=["tickets"])
+def delete_ticket(
+    ticket_number: str,
+    payload: dict = Depends(get_current_user),
+):
+    """User deletes their own ticket (or admin deletes any ticket)."""
+    db = get_db_connection()
+    role    = payload.get("role")
+    user_id = payload.get("sub")
+
+    rows = db.execute_query(
+        "SELECT user_id FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if role != "admin" and rows[0].get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own tickets")
+
+    for tbl, col in [
+        ("ticket_comments",   "ticket_number"),
+        ("ticket_attachments","ticket_number"),
+        ("agent_sessions",    "ticket_number"),
+        ("ticket_feedback",   "ticket_number"),
+    ]:
+        db.execute_query(f"DELETE FROM {tbl} WHERE {col}=%s", (ticket_number,), fetch=False)
+
+    db.execute_query(
+        "DELETE FROM new_tickets WHERE ticketnumber=%s", (ticket_number,), fetch=False
+    )
+    return {"success": True, "message": f"Ticket {ticket_number} deleted"}
+
+
 # ── E5: Feedback Loop ─────────────────────────────────────────────────────────
 
 class FeedbackRequest(BaseModel):
@@ -636,6 +670,13 @@ def _get_my_tickets_impl(status_filter, limit, payload):
                 "FROM new_tickets WHERE user_id=%s"
             )
             params: list = [uid]
+        elif role in ("tech_lead", "admin"):
+            base = (
+                "SELECT ticketnumber, title, description, status, priority, issuetype, "
+                "createdate, resolveddatetime, assigned_tech_id, source, user_id "
+                "FROM new_tickets WHERE 1=1"
+            )
+            params = []
         else:
             base = (
                 "SELECT ticketnumber, title, description, status, priority, issuetype, "
@@ -780,6 +821,49 @@ def reassign_ticket(
     )
 
     return {"success": True, "message": f"Ticket reassigned to {new_tech_name}"}
+
+
+# ── Escalate Ticket (tech lead only) ─────────────────────────────────────────
+
+class EscalateRequest(BaseModel):
+    reason: str = Field(..., min_length=1, description="Reason for escalation")
+
+
+@router.patch("/tickets/{ticket_number}/escalate", tags=["tickets"])
+def escalate_ticket(
+    ticket_number: str,
+    req: EscalateRequest,
+    payload: dict = Depends(require_tech_lead),
+):
+    """Tech lead escalates a ticket, setting its status to Escalated."""
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT ticketnumber, status, assigned_tech_id FROM new_tickets WHERE ticketnumber=%s",
+        (ticket_number,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    ticket = rows[0]
+    if ticket.get("status") in ("Resolved", "Closed", "Escalated"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot escalate a ticket with status '{ticket.get('status')}'"
+        )
+
+    db.execute_query(
+        "UPDATE new_tickets SET status='Escalated' WHERE ticketnumber=%s",
+        (ticket_number,), fetch=False,
+    )
+
+    db.execute_query(
+        "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content, is_internal)"
+        " VALUES (%s,%s,'system','System',%s,FALSE)",
+        (ticket_number, payload.get("sub"), f"Ticket escalated. Reason: {req.reason}"),
+        fetch=False,
+    )
+
+    return {"success": True, "message": "Ticket escalated", "reason": req.reason}
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────
