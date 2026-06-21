@@ -180,7 +180,23 @@ jobs:
           kubectl set image deployment/ticketing-api \
             ticketing-api=${{ needs.build-api.outputs.image }} \
             -n ticketing
-          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=8m
+          kubectl rollout status deployment/ticketing-api -n ticketing --timeout=8m || {
+            echo "=== ROLLOUT FAILED — diagnostics ==="
+            kubectl get pods -n ticketing -o wide
+            echo "--- Pod events ---"
+            kubectl get events -n ticketing --sort-by=.lastTimestamp | tail -30
+            echo "--- New pod logs (last 50 lines) ---"
+            kubectl get pods -n ticketing -l app=ticketing-api --no-headers \
+              | awk '{print $1}' \
+              | head -1 \
+              | xargs -I{} kubectl logs {} -n ticketing --tail=50 2>/dev/null || true
+            echo "--- Pod describe ---"
+            kubectl get pods -n ticketing -l app=ticketing-api --no-headers \
+              | awk '{print $1}' \
+              | head -1 \
+              | xargs -I{} kubectl describe pod {} -n ticketing 2>/dev/null || true
+            exit 1
+          }
 
       - name: Roll out new worker image
         run: |
