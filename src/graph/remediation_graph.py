@@ -435,6 +435,19 @@ KNOWLEDGE BASE:
 - KB articles include a VERIFY command — run it verbatim to prove resolution.
 - If no KB context was pre-loaded, call search_knowledge_base early in your diagnosis.
 
+PHYSICAL / HARDWARE TRIAGE (read this first):
+Some tickets cannot be fixed remotely. Identify them immediately from the ticket title and description — do NOT run diagnostics first.
+Call finish(resolved=False, escalation_reason="...") RIGHT AWAY if the ticket describes:
+  - Broken, cracked, or damaged physical components (screen, keyboard, motherboard, battery, ports)
+  - Hardware replacement or procurement requests (new laptop, RAM upgrade, printer replacement)
+  - Physical theft, loss, or destruction of equipment
+  - On-site setup, cable installation, or physical deployment tasks
+  - Any issue where the resolution inherently requires a human technician to be physically present
+
+Example: "laptop screen is broken" → immediately call finish(resolved=False, escalation_reason=
+"Physical hardware damage — broken laptop screen requires on-site technician or hardware replacement. Cannot be resolved remotely.")
+Do NOT web-search, do NOT run any commands — just finish with escalation.
+
 RULES:
 - Tier-1 (diagnostic) commands are read-only — run them freely.
 - Tier-2 (fix) commands — only after you know the root cause from evidence.
@@ -987,7 +1000,8 @@ async def run_remediation_session(
 
     # ── Determine final status ────────────────────────────────────────────────
     final_status = "resolved" if resolved else ("escalated" if escalation else "failed")
-    ticket_status = "Resolved" if resolved else "Open"
+    # Escalated = technician needs to take over → "In Progress", not "Open"
+    ticket_status = "Resolved" if resolved else ("In Progress" if escalation else "Open")
 
     if not explanation and escalation:
         explanation = escalation

@@ -619,25 +619,30 @@ def assign_technician_node(state: TicketState) -> Dict:
 
 _RESOLUTION_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessage(content=(
-        "You are an expert IT support engineer. "
-        "Write a clear, numbered, step-by-step resolution guide for the given ticket. "
-        "Use simple language the technician can follow. "
-        "If similar resolved tickets are provided, incorporate their solutions. "
-        "Do not repeat the problem — focus only on the fix."
+        "You are an expert IT support engineer writing a resolution guide for a technician.\n"
+        "Rules:\n"
+        "- Write specific, actionable steps tailored to THIS exact ticket — not generic advice.\n"
+        "- If the issue is physical hardware (broken screen, damaged component, replacement needed): "
+        "write steps for procurement/replacement, NOT software diagnostics.\n"
+        "- If the issue requires on-site presence: say so clearly in step 1.\n"
+        "- If similar resolved tickets are provided, reference their specific solutions.\n"
+        "- Do NOT include generic steps like 'Check system logs' or 'Reproduce the issue' "
+        "unless they directly apply to this specific ticket.\n"
+        "- Keep it under 10 steps. Be concise and direct."
     )),
     HumanMessage(content=(
         "Ticket: {title}\n"
         "Description: {description}\n"
-        "Category: {category}\n"
+        "Issue Type: {category}\n"
         "Priority: {priority}\n\n"
         "Similar resolved tickets:\n{similar}\n\n"
-        "Provide the resolution steps:"
+        "Write specific resolution steps for this ticket:"
     )),
 ])
 
 
 def generate_resolution_node(state: TicketState) -> Dict:
-    """Generate a resolution using the large LLM, informed by similar tickets."""
+    """Generate a context-aware resolution guide using the LLM, informed by similar tickets."""
     errors = list(state.get("errors", []))
 
     similar_text = ""
@@ -646,6 +651,7 @@ def generate_resolution_node(state: TicketState) -> Dict:
     if not similar_text:
         similar_text = "No similar tickets found."
 
+    resolution = None
     try:
         callbacks = get_callbacks()
         llm = get_llm(callbacks)
@@ -660,16 +666,12 @@ def generate_resolution_node(state: TicketState) -> Dict:
         resolution = resp.content.strip()
     except Exception as e:
         log.warning("Resolution generation failed: %s", e)
-        resolution = (
-            "1. Review the ticket details carefully.\n"
-            "2. Reproduce the issue in a controlled environment if possible.\n"
-            "3. Check system logs for errors related to the reported issue.\n"
-            "4. Apply the appropriate fix based on findings.\n"
-            "5. Verify the fix resolves the issue and notify the user."
-        )
         errors.append(f"resolution_gen: {e}")
+        # Do not persist a generic fallback — leave resolution empty so the
+        # technician generates it on demand via the AI Suggestions panel.
+        return {"resolution": None, "errors": errors}
 
-    # Persist resolution
+    # Persist the LLM-generated resolution
     try:
         from src.database.db_connection import DatabaseConnection
         db = DatabaseConnection()

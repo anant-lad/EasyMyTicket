@@ -882,6 +882,32 @@ def update_ticket_status(
     return {"success": True, "message": f"Status updated to {req.status}"}
 
 
+class ResolutionUpdateRequest(BaseModel):
+    resolution: str
+
+
+@router.patch("/tickets/{ticket_number}/resolution", tags=["tickets"])
+def update_ticket_resolution(
+    ticket_number: str,
+    req: ResolutionUpdateRequest,
+    payload: dict = Depends(require_tech),
+):
+    """Technician saves AI-generated or manually written resolution to the ticket."""
+    db = get_db_connection()
+    rows = db.execute_query(
+        "SELECT ticketnumber FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    db.execute_query(
+        "UPDATE new_tickets SET resolution=%s WHERE ticketnumber=%s",
+        (req.resolution, ticket_number),
+        fetch=False,
+    )
+    return {"success": True}
+
+
 # ── Ticket Reassign (tech lead only) ─────────────────────────────────────────
 
 class ReassignRequest(BaseModel):
