@@ -152,6 +152,29 @@ _MIGRATIONS = [
         "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
     ),
     "CREATE INDEX IF NOT EXISTS idx_attendance_tech_date ON technician_attendance(tech_id, date DESC)",
+
+    # E16: Linux troubleshooting knowledge base (Agentic RAG)
+    (
+        "CREATE TABLE IF NOT EXISTS linux_troubleshooting_kb ("
+        "id         SERIAL PRIMARY KEY, "
+        "title      TEXT NOT NULL, "
+        "category   TEXT NOT NULL, "
+        "os_type    TEXT NOT NULL DEFAULT 'Linux', "
+        "symptoms   TEXT, "
+        "diagnostics TEXT, "
+        "root_causes TEXT, "
+        "fix_steps  TEXT, "
+        "verification TEXT, "
+        "source     TEXT NOT NULL DEFAULT 'manual', "
+        "embedding  REAL[], "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_kb_fts ON linux_troubleshooting_kb "
+        "USING GIN(to_tsvector('english', "
+        "title || ' ' || COALESCE(symptoms,'') || ' ' || COALESCE(fix_steps,'')))"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_kb_category ON linux_troubleshooting_kb(category)",
 ]
 
 

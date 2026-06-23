@@ -24,6 +24,7 @@ class LoginResponse(BaseModel):
     name: str
     email: str
     agent_api_key: str = ""
+    org_id: str = ""
 
 
 class RegisterRequest(BaseModel):
@@ -39,7 +40,7 @@ def login(req: LoginRequest):
 
     # Try technician first
     tech_rows = db.execute_query(
-        "SELECT tech_id, tech_name, tech_mail, tech_password, is_admin, tech_role, agent_api_key FROM technician_data WHERE tech_mail = %s LIMIT 1",
+        "SELECT tech_id, tech_name, tech_mail, tech_password, is_admin, tech_role, agent_api_key, org_id FROM technician_data WHERE tech_mail = %s LIMIT 1",
         (req.email,),
     )
     if tech_rows:
@@ -59,11 +60,12 @@ def login(req: LoginRequest):
             access_token=token, role=role,
             id=tech["tech_id"], name=tech["tech_name"], email=tech["tech_mail"],
             agent_api_key=tech.get("agent_api_key") or "",
+            org_id=tech.get("org_id") or "",
         )
 
     # Try user
     user_rows = db.execute_query(
-        "SELECT user_id, user_name, user_mail, user_password, agent_api_key FROM user_data WHERE user_mail = %s LIMIT 1",
+        "SELECT user_id, user_name, user_mail, user_password, agent_api_key, org_id FROM user_data WHERE user_mail = %s LIMIT 1",
         (req.email,),
     )
     if user_rows:
@@ -77,6 +79,7 @@ def login(req: LoginRequest):
             access_token=token, role="user",
             id=user["user_id"], name=user["user_name"], email=user["user_mail"],
             agent_api_key=user.get("agent_api_key") or "",
+            org_id=user.get("org_id") or "",
         )
 
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
@@ -161,9 +164,20 @@ def get_agent_key(
 
 @router.get("/api/auth/me", tags=["auth"])
 def me(payload: dict = Depends(get_current_user)):
+    db = DatabaseConnection()
+    subject_id = payload["sub"]
+    role = payload.get("role", "user")
+    org_id = ""
+    if role in ("tech", "tech_lead", "admin"):
+        rows = db.execute_query("SELECT org_id FROM technician_data WHERE tech_id=%s LIMIT 1", (subject_id,))
+    else:
+        rows = db.execute_query("SELECT org_id FROM user_data WHERE user_id=%s LIMIT 1", (subject_id,))
+    if rows:
+        org_id = rows[0].get("org_id") or ""
     return {
-        "id":    payload["sub"],
-        "email": payload["email"],
-        "role":  payload["role"],
-        "name":  payload["name"],
+        "id":     subject_id,
+        "email":  payload["email"],
+        "role":   role,
+        "name":   payload["name"],
+        "org_id": org_id,
     }

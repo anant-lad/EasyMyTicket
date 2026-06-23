@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.database.db_connection import DatabaseConnection
-from src.llm.provider import get_callbacks, get_llm
+from src.llm.provider import get_callbacks, get_llm, get_llm_for_tools
 try:
     from agent.executor import list_available_commands
 except ImportError:
@@ -119,6 +119,32 @@ def _build_tool_definitions() -> list:
                         },
                     },
                     "required": ["script", "script_type", "reasoning"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge_base",
+                "description": (
+                    "Search the internal Linux troubleshooting knowledge base for documented fixes. "
+                    "Use this when you need more context about a specific error, driver, or issue pattern. "
+                    "Returns relevant articles with symptoms, fix steps, and verification commands. "
+                    "Runs on the backend — does NOT dispatch to the device."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language search query, e.g. 'camera not working video group'",
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category filter: camera, wifi, audio, bluetooth, driver, nvidia, docker, ssh, grub, disk, etc.",
+                        },
+                    },
+                    "required": ["query"],
                 },
             },
         },
@@ -296,6 +322,25 @@ def _build_auto_tool_definitions() -> list:
         {
             "type": "function",
             "function": {
+                "name": "search_knowledge_base",
+                "description": (
+                    "Search the internal Linux troubleshooting KB for documented fixes. "
+                    "Runs on the backend — no device dispatch. "
+                    "Returns articles with symptoms, fix_steps, and verification commands."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query":    {"type": "string", "description": "Search query"},
+                        "category": {"type": "string", "description": "Optional category filter"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "finish",
                 "description": "Mark the session complete when the issue is resolved or cannot be fixed.",
                 "parameters": {
@@ -351,39 +396,53 @@ User's machine OS: {os}
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """You are an expert IT support engineer with remote access to the user's machine.
-Your job is to diagnose and fix the reported issue autonomously — like running Claude Code in auto mode.
+Your job: read the ticket, reason about the root cause, diagnose it, fix it, verify the fix actually resolves what the user reported, then close.
 
-Workflow:
-1. READ the ticket carefully. Think about what could cause the issue.
-2. DIAGNOSE: run diagnostic (Tier-1) commands to gather evidence. Start broad, then narrow down.
-3. UNDERSTAND: reason about each command output before the next step.
-4. PLAN: once you understand the root cause, decide on the fix.
-5. FIX: execute Tier-2 fix commands. Prefer targeted fixes over broad ones.
-6. VERIFY: re-run the relevant diagnostic to confirm the fix worked.
-7. FINISH: call finish() with a clear explanation for the user.
+WORKFLOW:
+1. READ   — understand exactly what the user says is broken. What did they try? What error did they see?
+2. REASON — before running any command, think: what are the possible causes of this specific issue?
+3. DIAGNOSE — run Tier-1 (read-only) commands to gather evidence. Let output guide next steps — not a preset script.
+4. ROOT CAUSE — identify the specific cause from evidence. Don't fix until you know what you're fixing.
+5. FIX — apply the minimal targeted fix. One change at a time.
+6. VERIFY — this is mandatory. Prove the user's actual reported problem is gone.
+   Verification must test the SAME THING the user complained about — not a proxy.
+   Examples:
+     - "camera not working" → capture a real frame as the actual human user, confirm it succeeds
+     - "WiFi not connecting" → ping 8.8.8.8, not just check ifconfig
+     - "app crashes on launch" → actually launch the app, check exit code
+   A kernel module being loaded, a service being active, or a file existing is NOT verification.
+7. FINISH — call finish(resolved=True) only after verification passes with concrete proof.
+            If verification fails after 3 fix attempts, call finish(resolved=False, escalation_reason=
+            "What I tried: ... What failed: ... What the technician should try next: ...")
 
-Web search & download capabilities:
-- Use web_search(QUERY) to find driver names, package names, download URLs, or fix procedures.
-  Example: web_search(QUERY="ubuntu 22.04 uvcvideo camera driver fix")
-- Use check_url(URL) to verify a download link is reachable.
-- Use download_file(URL, PATH) to download drivers, packages, or tools to the device.
-  On Linux: always prefer CLI downloads (wget/curl via download_file) over open_browser.
-  On Windows/macOS: use download_file for direct links; use open_browser only when the
-  download requires authentication or a CAPTCHA that cannot be bypassed programmatically.
-- Use install_from_file(PATH) to install a downloaded .deb/.rpm/.pkg/.exe/.msi.
-- Use open_browser(URL) as a last resort for auth-gated OEM driver pages on Windows/macOS.
-- Use verify_download(PATH) to check a file's type and checksum after downloading.
+SYSTEM CONTEXT (important):
+- This agent runs as root inside a systemd service. $(whoami) = root — never use it for the human user.
+- Get the actual logged-in user: ACTUAL_USER=$(logname 2>/dev/null || who | awk 'NR==1{print $1}')
+- Run things AS the human user: su - "$ACTUAL_USER" -c '...' (for permission-sensitive checks)
+- Named commands like camera_permission_check and add_user_to_video_group already handle this internally.
 
-Rules:
-- Run Tier-1 (diagnostic) commands freely — they are read-only.
-- Run Tier-2 (fix) commands only when you have identified the root cause.
-- Never assume — always verify with a diagnostic command first.
-- If a fix attempt fails, try an alternative approach including web search for the error message.
-- If after 3 fix attempts the issue persists, call finish(resolved=False) with escalation_reason.
-- Keep the user's explanation in plain English — no jargon.
-- You have {max_steps} total steps. Use them wisely.
+WEB SEARCH & DOWNLOAD:
+- web_search(QUERY) — find drivers, packages, error explanations, fix procedures
+- download_file(URL, PATH) — download to device (prefer over open_browser on Linux)
+- install_from_file(PATH) — install .deb/.rpm/.pkg/.exe/.msi
+- open_browser(URL) — only when download requires auth or CAPTCHA
 
-The user's machine OS is: {os}
+KNOWLEDGE BASE:
+- You have access to search_knowledge_base(query) — searches our internal Linux troubleshooting KB.
+- At session start, relevant KB articles may already be provided in the ticket context below.
+- When a KB article is shown, compare its fix against what YOUR diagnostics find first.
+  Don't blindly apply it — use it to guide your approach, then confirm with evidence.
+- KB articles include a VERIFY command — run it verbatim to prove resolution.
+- If no KB context was pre-loaded, call search_knowledge_base early in your diagnosis.
+
+RULES:
+- Tier-1 (diagnostic) commands are read-only — run them freely.
+- Tier-2 (fix) commands — only after you know the root cause from evidence.
+- Never run the same diagnostic twice expecting different output.
+- If a fix fails, search the web for the actual error message before trying another approach.
+- You have {max_steps} steps — use them on reasoning and targeted actions, not repeat checks.
+
+User's machine OS: {os}
 """
 
 
@@ -597,25 +656,72 @@ async def run_remediation_session(
     log.info("Remediation session started: ticket=%s device=%s session=%s auto_mode=%s",
              ticket_number, device_id, session_id[:8], auto_mode)
 
+    # ── Pre-fetch KB context ──────────────────────────────────────────────────
+    kb_context = ""
+    try:
+        from src.database.db_connection import format_kb_context
+        kb_articles = db.search_kb(f"{title} {description}", top_k=3)
+        if kb_articles:
+            kb_context = format_kb_context(kb_articles)
+            log.info("Session %s: KB pre-fetch found %d articles", session_id[:8], len(kb_articles))
+        else:
+            log.info("Session %s: no KB articles found for this ticket", session_id[:8])
+    except Exception as e:
+        log.warning("Session %s: KB pre-fetch failed (non-fatal): %s", session_id[:8], e)
+
+    # ── Pre-fetch similar resolved tickets ────────────────────────────────────
+    similar_context = ""
+    try:
+        similar = db.find_similar_tickets(title, description or "", limit=2)
+        resolved_similar = [
+            t for t in similar
+            if t.get("resolution") and t.get("status") in ("resolved", "closed")
+        ]
+        if resolved_similar:
+            lines = ["SIMILAR RESOLVED TICKETS:\n"]
+            for t in resolved_similar[:2]:
+                lines.append(f"- [{t['ticketnumber']}] {t['title']}")
+                lines.append(f"  Resolution: {str(t['resolution'])[:300]}")
+                lines.append("")
+            similar_context = "\n".join(lines)
+            log.info("Session %s: found %d similar resolved tickets", session_id[:8], len(resolved_similar))
+    except Exception as e:
+        log.warning("Session %s: similar ticket search failed (non-fatal): %s", session_id[:8], e)
+
     # ── Initialise LLM conversation ───────────────────────────────────────────
     if auto_mode:
         system_content = _AUTO_SYSTEM_PROMPT.format(os=device_os, max_steps=MAX_STEPS)
     else:
         system_content = _SYSTEM_PROMPT.format(os=device_os, max_steps=MAX_STEPS)
+
+    ticket_msg = (
+        f"Ticket #{ticket_number}\n"
+        f"Category: {category}\n"
+        f"Title: {title}\n"
+        f"Description: {description}\n\n"
+    )
+    if kb_context:
+        ticket_msg += kb_context + "\n"
+    if similar_context:
+        ticket_msg += similar_context + "\n"
+    ticket_msg += (
+        "Please diagnose and fix this issue.\n"
+        + ("If KB articles or similar tickets are shown above, compare their fixes against "
+           "what you observe from diagnostics before applying anything.\n"
+           if kb_context or similar_context else "")
+    )
+
     messages: List[Any] = [
         SystemMessage(content=system_content),
-        HumanMessage(content=(
-            f"Ticket #{ticket_number}\n"
-            f"Category: {category}\n"
-            f"Title: {title}\n"
-            f"Description: {description}\n\n"
-            "Please diagnose and fix this issue."
-        )),
+        HumanMessage(content=ticket_msg),
     ]
 
     callbacks  = get_callbacks()
     tools      = _AUTO_TOOLS if auto_mode else _TOOLS
-    llm        = get_llm(callbacks).bind_tools(tools)
+    # Pass tools into get_llm_for_tools so bind_tools is applied per-model
+    # before the Groq→OpenRouter fallback chain is built. Calling .bind_tools()
+    # on the returned chain would fail because RunnableWithFallbacks doesn't expose it.
+    llm        = get_llm_for_tools(callbacks, tools=tools)
 
     step_count  = 0
     resolved    = False
@@ -635,10 +741,18 @@ async def run_remediation_session(
             break
 
         # LLM decides next action
+        log.info("Session %s step %d: invoking LLM...", session_id[:8], step_count)
         try:
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: llm.invoke(messages)
+            response = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: llm.invoke(messages)
+                ),
+                timeout=90,  # 90 s max per step — prevents hang on Groq rate-limit stalls
             )
+        except asyncio.TimeoutError:
+            log.error("Session %s: LLM timed out at step %d", session_id[:8], step_count)
+            escalation = f"LLM timed out at step {step_count} — Groq/OpenRouter did not respond within 90 s."
+            break
         except Exception as e:
             log.error("Session %s: LLM call failed at step %d: %s",
                       session_id[:8], step_count, e)
@@ -665,6 +779,24 @@ async def run_remediation_session(
             log.info("Session %s step %d: %s(%s) — %s",
                      session_id[:8], step_count, fn_name,
                      fn_args.get("command", fn_name), reasoning)
+
+            # ── search_knowledge_base() — backend only, no device dispatch ────
+            if fn_name == "search_knowledge_base":
+                query    = fn_args.get("query", "")
+                category = fn_args.get("category")
+                try:
+                    from src.database.db_connection import format_kb_context
+                    results = db.search_kb(query, category=category, top_k=3)
+                    content = format_kb_context(results) or "No relevant articles found in knowledge base."
+                    log.info("Session %s: KB search=%r → %d results",
+                             session_id[:8], query[:60], len(results))
+                except Exception as e:
+                    content = f"Knowledge base search failed: {e}"
+                    log.warning("Session %s: KB search error: %s", session_id[:8], e)
+                _save_step(db, session_id, step_count, "reasoning",
+                           llm_reasoning=f"KB search: {query}")
+                messages.append(ToolMessage(content=content, tool_call_id=tc_id))
+                continue
 
             # ── finish() ──────────────────────────────────────────────────────
             if fn_name == "finish":
@@ -893,7 +1025,7 @@ async def run_remediation_session(
     except Exception as e:
         log.warning("Report generation failed: %s", e)
 
-    # E2: notify user and technician on session completion
+    # Notify user and technician on session completion
     try:
         from src.agents.notification_agent import NotificationAgent
         ticket_rows = db.execute_query(
@@ -901,17 +1033,42 @@ async def run_remediation_session(
             (ticket_number,),
         )
         ticket_meta = ticket_rows[0] if ticket_rows else {}
-        NotificationAgent().send_ticket_notification(
+        assigned_tech_id = ticket_meta.get("assigned_tech_id") or oversight_tech_id
+        notif = NotificationAgent()
+
+        # Standard user + tech notification (resolved or assigned)
+        notif.send_ticket_notification(
             ticket_number=ticket_number,
             title=title,
             priority=ticket_meta.get("priority", "Medium"),
             category=ticket_meta.get("issuetype", category),
             resolution=explanation,
-            assigned_tech_id=ticket_meta.get("assigned_tech_id"),
+            assigned_tech_id=assigned_tech_id,
             user_id=user_id,
             auto_resolved=resolved,
             agent_dispatched=True,
         )
+
+        # Escalation: tech handoff email with session trace link
+        if not resolved and assigned_tech_id:
+            try:
+                tech_rows = db.execute_query(
+                    "SELECT tech_name, tech_mail FROM technician_data WHERE tech_id=%s",
+                    (assigned_tech_id,),
+                )
+                if tech_rows:
+                    notif.send_escalation_notification(
+                        tech_id=assigned_tech_id,
+                        tech_name=tech_rows[0]["tech_name"],
+                        tech_mail=tech_rows[0].get("tech_mail", ""),
+                        ticket_number=ticket_number,
+                        title=title,
+                        escalation_reason=escalation or explanation,
+                        session_id=session_id,
+                        step_count=step_count,
+                    )
+            except Exception as e:
+                log.warning("Could not send escalation notification: %s", e)
     except Exception as e:
         log.warning("Could not send session-completion notification: %s", e)
 

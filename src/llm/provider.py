@@ -176,3 +176,63 @@ def get_small_llm(callbacks: Optional[list] = None) -> BaseChatModel:
     if callbacks:
         return llm.with_config({"callbacks": callbacks})
     return llm
+
+
+def get_llm_for_tools(callbacks: Optional[list] = None, tools: Optional[list] = None) -> BaseChatModel:
+    """Return an LLM chain suitable for tool-calling with Groq → OpenRouter fallback.
+
+    .bind_tools() is applied to each model individually before wrapping in the
+    fallback chain, because RunnableWithFallbacks does not expose bind_tools itself.
+    Pass tools here instead of calling .bind_tools() on the returned chain.
+    If tools is None, returns bare ChatGroq (backward-compatible)."""
+    from src.config import Config
+    from langchain_groq import ChatGroq
+
+    groq_llm = ChatGroq(
+        api_key=Config.GROQ_API_KEY,
+        model=Config.CLASSIFICATION_MODEL,
+        temperature=Config.LLM_TEMPERATURE,
+        max_tokens=Config.LLM_MAX_TOKENS,
+    )
+
+    if tools is None:
+        # Backward-compatible: caller will call .bind_tools() themselves
+        llm: BaseChatModel = groq_llm
+        if callbacks:
+            return llm.with_config({"callbacks": callbacks})
+        return llm
+
+    # Bind tools to each model before wrapping — this is required because
+    # RunnableWithFallbacks/RunnableRetry don't expose bind_tools().
+    groq_bound = groq_llm.bind_tools(tools)
+
+    exc_types = _groq_rate_limit_exceptions()
+    groq_with_retry = groq_bound.with_retry(
+        retry_if_exception_type=exc_types,
+        wait_exponential_jitter=True,
+        stop_after_attempt=3,
+    )
+
+    fallbacks: List[BaseChatModel] = []
+    if Config.OPENROUTER_API_KEY:
+        from langchain_openai import ChatOpenAI
+        openrouter_llm = ChatOpenAI(
+            api_key=Config.OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+            model="meta-llama/llama-3.3-70b-instruct",
+            temperature=Config.LLM_TEMPERATURE,
+            max_tokens=Config.LLM_MAX_TOKENS,
+            default_headers={
+                "HTTP-Referer": "https://easymyticket.app",
+                "X-Title": "EasyMyTicket",
+            },
+        )
+        fallbacks.append(openrouter_llm.bind_tools(tools))
+        log.info("Remediation agent: Groq → OpenRouter fallback configured for tool-calling")
+    else:
+        log.warning("OPENROUTER_API_KEY not set — remediation agent has no fallback on Groq 429")
+
+    chain = groq_with_retry.with_fallbacks(fallbacks, exceptions_to_handle=exc_types) if fallbacks else groq_with_retry
+    if callbacks:
+        return chain.with_config({"callbacks": callbacks})
+    return chain

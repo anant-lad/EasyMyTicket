@@ -213,7 +213,14 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
          "Select-Object Name,Id,Description | ConvertTo-Json -Compress"],
     ),
     "camera_permission_check": (
-        ["bash", "-c", "groups | grep -i 'video\\|camera' && echo 'User has video group' || echo 'User NOT in video group'"],
+        # Detect the actual human user (agent runs as root; $(whoami) would return 'root')
+        # and check THAT user's group membership in the persistent /etc/group file.
+        ["bash", "-c",
+         "ACTUAL_USER=$(logname 2>/dev/null || who | awk 'NR==1{print $1}' || "
+         "getent passwd | awk -F: '$3>=1000 && $3<65534{print $1}' | head -1); "
+         "echo \"Checking groups for: $ACTUAL_USER\"; "
+         "id -Gn \"$ACTUAL_USER\" 2>/dev/null | grep -w video "
+         "&& echo 'User has video group' || echo 'User NOT in video group'"],
         ["bash", "-c", "tccutil status Camera 2>/dev/null || echo 'TCC check unavailable'"],
         ["powershell", "-NoProfile", "-Command",
          "Get-AppxPackage | Where-Object {$_.PackageFullName -match 'camera'} | "
@@ -223,6 +230,24 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
         ["bash", "-c", "v4l2-ctl --list-devices 2>/dev/null || echo 'v4l2-ctl not available'"],
         ["bash", "-c", "echo 'v4l2 not applicable on macOS'"],
         ["powershell", "-NoProfile", "-Command", "echo 'v4l2 not applicable on Windows'"],
+    ),
+    "camera_usb_detect": (
+        ["bash", "-c", "lsusb | grep -i -E 'camera|webcam|imaging|uvc|video' || echo 'No camera USB device found'"],
+        ["bash", "-c", "system_profiler SPCameraDataType 2>/dev/null | head -10 || echo 'No camera found'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-PnpDevice | Where-Object {$_.FriendlyName -match 'camera|webcam'} | "
+         "Select-Object Status,FriendlyName | ConvertTo-Json -Compress"],
+    ),
+    "camera_dmesg_errors": (
+        ["bash", "-c", "dmesg | grep -i -E 'uvc|camera|video|webcam' | tail -30 || echo 'No camera messages in dmesg'"],
+        ["bash", "-c", "log show --predicate \"subsystem contains 'camera'\" --last 1h 2>/dev/null | tail -20 || echo 'No camera log entries'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-EventLog System -Source *camera* -Newest 10 -ErrorAction SilentlyContinue | ConvertTo-Json -Compress"],
+    ),
+    "camera_module_info": (
+        ["bash", "-c", "modinfo uvcvideo 2>/dev/null | head -8 || echo 'uvcvideo module not found'"],
+        ["bash", "-c", "echo 'macOS uses AVFoundation — no kernel module check needed'"],
+        ["powershell", "-NoProfile", "-Command", "echo 'Windows camera uses built-in UVC class driver'"],
     ),
 
     # Security
@@ -502,7 +527,30 @@ TIER2: Dict[str, Tuple[List, List, List]] = {
          "pnputil /restart-device (Get-PnpDevice | Where-Object {$_.FriendlyName -match 'camera'}).InstanceId"],
     ),
     "add_user_to_video_group": (
-        ["bash", "-c", "sudo usermod -aG video $(whoami) && echo 'Added to video group. Please log out and back in.'"],
+        # Agent runs as root via systemd — $(whoami) returns 'root', not the human user.
+        # Detect the actual logged-in user and add THEM to the video group.
+        ["bash", "-c",
+         "ACTUAL_USER=$(logname 2>/dev/null || who | awk 'NR==1{print $1}' || "
+         "getent passwd | awk -F: '$3>=1000 && $3<65534{print $1}' | head -1); "
+         "echo \"Adding $ACTUAL_USER to video group...\"; "
+         "sudo usermod -aG video \"$ACTUAL_USER\" && "
+         "echo \"Added $ACTUAL_USER to video group successfully.\""],
+        ["bash", "-c", "echo 'macOS does not use video group'"],
+        ["powershell", "-NoProfile", "-Command", "echo 'Windows does not use video group'"],
+    ),
+    "verify_camera_with_new_group": (
+        # sg video activates new group membership without requiring logout.
+        # Run as the actual human user (not root) and capture a test frame.
+        # CAMERA_OK = camera is accessible now; CAMERA_FAIL = still broken.
+        ["bash", "-c",
+         "ACTUAL_USER=$(logname 2>/dev/null || who | awk 'NR==1{print $1}' || "
+         "getent passwd | awk -F: '$3>=1000 && $3<65534{print $1}' | head -1); "
+         "echo \"Testing camera for user: $ACTUAL_USER\"; "
+         "su - \"$ACTUAL_USER\" -c 'sg video -c \"ffmpeg -y -f v4l2 -i /dev/video0 "
+         "-frames:v 1 /tmp/emt_cam_test.jpg -loglevel error 2>/dev/null "
+         "&& echo CAMERA_OK || echo CAMERA_FAIL\"' 2>/dev/null "
+         "|| sg video -c 'ffmpeg -y -f v4l2 -i /dev/video0 -frames:v 1 /tmp/emt_cam_test.jpg "
+         "-loglevel error 2>/dev/null && echo CAMERA_OK || echo CAMERA_FAIL'"],
         ["bash", "-c", "echo 'macOS does not use video group'"],
         ["powershell", "-NoProfile", "-Command", "echo 'Windows does not use video group'"],
     ),
@@ -749,6 +797,11 @@ def execute(
 
     if not cmd:
         return 0, f"Command '{command}' is not applicable on {_OS}.", ""
+
+    # On Linux, make every top-level `sudo` non-interactive so the agent never
+    # hangs waiting for a password when running headlessly under systemd.
+    if _OS == "Linux" and cmd[0] == "sudo" and "-n" not in cmd:
+        cmd.insert(1, "-n")
 
     # Path safety check for destructive commands
     if command in ("delete_file", "delete_directory", "clear_app_cache", "reset_app_prefs"):

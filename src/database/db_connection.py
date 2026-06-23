@@ -313,6 +313,94 @@ class DatabaseConnection:
         log.info("Similarity search found %d results", len(clean))
         return clean
 
+    # ── Knowledge base search ────────────────────────────────────────────────
+
+    def search_kb(
+        self,
+        query: str,
+        category: Optional[str] = None,
+        top_k: int = 3,
+    ) -> List[Dict]:
+        """Hybrid FTS + FastEmbed search over linux_troubleshooting_kb."""
+        import hashlib as _hashlib
+        query = query.strip()
+        if not query:
+            return []
+
+        cache_key = "kb:" + _hashlib.sha256(f"{query}:{category}".encode()).hexdigest()[:32]
+        cached = redis_cache.get(cache_key)
+        if cached:
+            return cached
+
+        if category:
+            candidates = self.execute_query(
+                "SELECT id, title, category, symptoms, diagnostics, root_causes, "
+                "fix_steps, verification, embedding "
+                "FROM linux_troubleshooting_kb "
+                "WHERE category = %s "
+                "AND to_tsvector('english', title || ' ' || COALESCE(symptoms,'') || ' ' || COALESCE(fix_steps,'')) "
+                "   @@ plainto_tsquery('english', %s) LIMIT 200",
+                (category, query),
+            ) or []
+            if not candidates:
+                candidates = self.execute_query(
+                    "SELECT id, title, category, symptoms, diagnostics, root_causes, "
+                    "fix_steps, verification, embedding "
+                    "FROM linux_troubleshooting_kb WHERE category = %s LIMIT 200",
+                    (category,),
+                ) or []
+        else:
+            candidates = self.execute_query(
+                "SELECT id, title, category, symptoms, diagnostics, root_causes, "
+                "fix_steps, verification, embedding "
+                "FROM linux_troubleshooting_kb "
+                "WHERE to_tsvector('english', title || ' ' || COALESCE(symptoms,'') || ' ' || COALESCE(fix_steps,'')) "
+                "   @@ plainto_tsquery('english', %s) LIMIT 200",
+                (query,),
+            ) or []
+            if not candidates:
+                candidates = self.execute_query(
+                    "SELECT id, title, category, symptoms, diagnostics, root_causes, "
+                    "fix_steps, verification, embedding "
+                    "FROM linux_troubleshooting_kb LIMIT 200",
+                    (),
+                ) or []
+
+        if not candidates:
+            return []
+
+        model = get_semantic_model()
+        query_emb = next(model.embed([query]))
+
+        stored = []
+        valid_idx = []
+        for i, row in enumerate(candidates):
+            emb = row.get("embedding")
+            if emb:
+                stored.append(np.array(emb, dtype=np.float32))
+                valid_idx.append(i)
+
+        results: List[Dict] = []
+        if stored:
+            sims = cosine_similarity([query_emb], np.stack(stored))[0]
+            for idx, score in sorted(zip(valid_idx, sims), key=lambda x: -x[1])[:top_k]:
+                if score < 0.35:
+                    break
+                row = dict(candidates[idx])
+                row.pop("embedding", None)
+                row["score"] = round(float(score), 4)
+                results.append(row)
+        else:
+            for row in candidates[:top_k]:
+                row = dict(row)
+                row.pop("embedding", None)
+                row["score"] = 0.5
+                results.append(row)
+
+        log.info("KB search: %d results for query=%r", len(results), query[:60])
+        redis_cache.set(cache_key, results, ttl=1800)
+        return results
+
     # ── Ticket CRUD ───────────────────────────────────────────────────────────
 
     def insert_ticket(self, ticket_data: Dict[str, Any]) -> Optional[str]:
@@ -366,14 +454,14 @@ class DatabaseConnection:
         if order_by.lower() not in allowed_cols:
             order_by = "createdate"
 
-        conditions, params = [], []
+        conditions, params = ["ticketnumber LIKE %s"], ["TKT-%"]
         for col, val in [("status", status), ("priority", priority),
                          ("issuetype", issuetype), ("user_id", user_id)]:
             if val:
                 conditions.append(f"{col} = %s")
                 params.append(val)
 
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions)
 
         pool = _get_pool()
         conn = pool.getconn()
@@ -453,3 +541,107 @@ class DatabaseConnection:
     def close(self):
         """No-op: pool is process-level; connections are returned after each query."""
         pass
+
+    def seed_kb(self, articles: List[Dict]) -> int:
+        """Insert KB articles with FastEmbed embeddings. Returns rows inserted."""
+        if not articles:
+            return 0
+
+        def _str(v) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, (dict, list)):
+                return json.dumps(v)
+            return str(v)
+
+        model = get_semantic_model()
+        texts = [
+            f"{_str(a.get('title'))} {_str(a.get('symptoms'))} {_str(a.get('fix_steps'))}".strip()
+            for a in articles
+        ]
+        embeddings = list(model.embed(texts))
+        inserted = 0
+        for article, emb in zip(articles, embeddings):
+            try:
+                self.execute_query(
+                    "INSERT INTO linux_troubleshooting_kb "
+                    "(title, category, os_type, symptoms, diagnostics, root_causes, "
+                    " fix_steps, verification, source, embedding) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (
+                        _str(article.get("title"))[:512],
+                        _str(article.get("category")) or "system",
+                        _str(article.get("os_type")) or "Linux",
+                        _str(article.get("symptoms")),
+                        _str(article.get("diagnostics")),
+                        _str(article.get("root_causes")),
+                        _str(article.get("fix_steps")),
+                        _str(article.get("verification")),
+                        _str(article.get("source")) or "manual",
+                        emb.tolist() if hasattr(emb, "tolist") else list(emb),
+                    ),
+                    fetch=False,
+                )
+                inserted += 1
+            except Exception as e:
+                log.warning("KB insert failed for %r: %s", article.get("title"), e)
+        log.info("seed_kb: inserted %d / %d", inserted, len(articles))
+        return inserted
+
+
+    def seed_from_resolved_tickets(self, limit: int = 500) -> int:
+        """Pull resolved/closed tickets and add them as KB articles."""
+        rows = self.execute_query(
+            """
+            SELECT title, description, resolution, issuetype FROM (
+                SELECT title, description, resolution, issuetype FROM resolved_tickets
+                 WHERE resolution IS NOT NULL AND title IS NOT NULL
+                UNION ALL
+                SELECT title, description, resolution, issuetype FROM closed_tickets
+                 WHERE resolution IS NOT NULL AND title IS NOT NULL
+            ) t ORDER BY random() LIMIT %s
+            """,
+            (limit,),
+        ) or []
+        articles = []
+        for row in rows:
+            if not row.get("title") or not row.get("resolution"):
+                continue
+            articles.append({
+                "title":       str(row["title"])[:200],
+                "category":    str(row.get("issuetype") or "system").lower(),
+                "os_type":     "Linux",
+                "symptoms":    str(row.get("description") or ""),
+                "diagnostics": "",
+                "root_causes": "",
+                "fix_steps":   str(row["resolution"])[:1000],
+                "verification": "",
+                "source":      "resolved_ticket",
+            })
+        log.info("seed_from_resolved_tickets: %d tickets → seeding", len(articles))
+        return self.seed_kb(articles)
+
+
+def format_kb_context(articles: List[Dict]) -> str:
+    """Format KB search results as markdown for the agent HumanMessage."""
+    if not articles:
+        return ""
+    lines = [f"KNOWLEDGE BASE — {len(articles)} relevant article(s) found:\n"]
+    for i, a in enumerate(articles, 1):
+        score = a.get("score", 0)
+        lines.append(f"[{i}] {a.get('category','').upper()}: {a.get('title','')} (relevance: {score:.2f})")
+        if a.get("symptoms"):
+            lines.append(f"  Symptoms: {a['symptoms'][:300]}")
+        if a.get("root_causes"):
+            lines.append(f"  Root cause: {a['root_causes'][:300]}")
+        if a.get("fix_steps"):
+            fix = "\n".join("    " + l for l in a["fix_steps"][:600].splitlines())
+            lines.append(f"  Fix:\n{fix}")
+        if a.get("verification"):
+            lines.append(f"  Verify: {a['verification'][:300]}")
+        lines.append("")
+    lines.append(
+        "Compare KB fix against your diagnostics before applying. "
+        "Run the VERIFY command verbatim to confirm resolution.\n"
+    )
+    return "\n".join(lines)

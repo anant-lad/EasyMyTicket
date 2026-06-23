@@ -42,6 +42,8 @@ class TicketCreateRequest(BaseModel):
         description="Due date and time in format: YYYY-MM-DD HH:MM:SS",
         json_schema_extra={"example": "2024-12-10 10:00:00"},
     )
+    priority: Optional[str] = Field(None, description="User-provided priority hint (AI may override): Critical, High, Medium, Low, Planning")
+    issuetype: Optional[int] = Field(None, description="User-provided issue type hint (AI may override): 4=Hardware, 5=Software, 6=Network, 10=General IT, 26=Other")
 
     model_config = {
         "json_schema_extra": {
@@ -51,6 +53,8 @@ class TicketCreateRequest(BaseModel):
                 "user_id": "user123",
                 "device_id": "a1b2c3d4-...",
                 "due_date_time": "2024-12-10 10:00:00",
+                "priority": "High",
+                "issuetype": 5,
             }
         }
     }
@@ -135,7 +139,7 @@ def _run_pipeline_background(
             )
             log.info("Background pipeline complete for %s", ticket_number)
         except Exception as e:
-            log.error("Background pipeline failed for %s: %s", ticket_number, e)
+            log.exception("Background pipeline failed for %s: %s", ticket_number, e)
 
 
 @router.post("/tickets/create", response_model=TicketResponse, status_code=201)
@@ -172,11 +176,22 @@ async def create_ticket(
         # ── Step 1: persist ticket immediately ──────────────────────────────
         db_conn = get_db_connection()
         ticket_number = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+        extra_cols = ""
+        extra_vals: list = []
+        if effective_device_id:
+            extra_cols += ", device_id"
+            extra_vals.append(effective_device_id)
+        if ticket_request.priority:
+            extra_cols += ", priority"
+            extra_vals.append(ticket_request.priority)
+        if ticket_request.issuetype is not None:
+            extra_cols += ", issuetype"
+            extra_vals.append(str(ticket_request.issuetype))
         db_conn.execute_query(
-            "INSERT INTO new_tickets (ticketnumber, title, description, user_id, status, createdate, source)"
-            " VALUES (%s,%s,%s,%s,'Open',NOW(),%s) ON CONFLICT (ticketnumber) DO NOTHING",
+            f"INSERT INTO new_tickets (ticketnumber, title, description, user_id, status, createdate, source{extra_cols})"
+            f" VALUES (%s,%s,%s,%s,'Open',NOW(),%s{', %s' * len(extra_vals)}) ON CONFLICT (ticketnumber) DO NOTHING",
             (ticket_number, ticket_request.title, ticket_request.description,
-             ticket_request.user_id, ticket_request.source or "portal"),
+             ticket_request.user_id, ticket_request.source or "portal", *extra_vals),
             fetch=False,
         )
         log.info("Ticket %s created instantly, pipeline queued", ticket_number)
@@ -539,6 +554,50 @@ async def resolve_ticket(
         )
 
 
+# ── Cancel Ticket (user recalls their own open ticket) ───────────────────────
+
+@router.post("/tickets/{ticket_number}/cancel", tags=["tickets"])
+def cancel_ticket(
+    ticket_number: str,
+    payload: dict = Depends(get_current_user),
+):
+    """User cancels (recalls) their own ticket if it is not yet resolved/closed."""
+    db = get_db_connection()
+    user_id = payload.get("sub")
+    role    = payload.get("role")
+
+    rows = db.execute_query(
+        "SELECT user_id, status FROM new_tickets WHERE ticketnumber=%s", (ticket_number,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    ticket = rows[0]
+    if role not in ("admin", "tech_lead") and ticket.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="You can only cancel your own tickets")
+
+    if ticket.get("status") in ("Resolved", "Closed"):
+        raise HTTPException(status_code=400, detail="Ticket is already resolved or closed")
+
+    db.execute_query(
+        "UPDATE new_tickets SET status='Closed', resolveddatetime=NOW() WHERE ticketnumber=%s",
+        (ticket_number,), fetch=False
+    )
+    # Terminate any running/pending agent session so the agent stops working
+    db.execute_query(
+        "UPDATE agent_sessions SET status='failed',"
+        " escalation_reason='Ticket cancelled by user', completed_at=NOW()"
+        " WHERE ticket_number=%s AND status IN ('running', 'awaiting_approval', 'pending')",
+        (ticket_number,), fetch=False
+    )
+    db.execute_query(
+        "INSERT INTO ticket_comments (ticket_number, author_id, author_type, author_name, content, is_internal)"
+        " VALUES (%s, %s, 'system', 'System', 'Ticket cancelled by user', FALSE)",
+        (ticket_number, user_id), fetch=False
+    )
+    return {"success": True, "message": "Ticket cancelled"}
+
+
 # ── Delete Ticket (owner or admin) ───────────────────────────────────────────
 
 @router.delete("/tickets/{ticket_number}", tags=["tickets"])
@@ -556,9 +615,15 @@ def delete_ticket(
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if role != "admin" and rows[0].get("user_id") != user_id:
+    if role not in ("admin", "tech_lead") and rows[0].get("user_id") != user_id:
         raise HTTPException(status_code=403, detail="You can only delete your own tickets")
 
+    # Delete in FK-safe order: session_steps → agent_sessions → other dependents → ticket
+    db.execute_query(
+        "DELETE FROM session_steps WHERE session_id IN "
+        "(SELECT session_id FROM agent_sessions WHERE ticket_number=%s)",
+        (ticket_number,), fetch=False,
+    )
     for tbl, col in [
         ("ticket_comments",   "ticket_number"),
         ("ticket_attachments","ticket_number"),
@@ -571,6 +636,45 @@ def delete_ticket(
         "DELETE FROM new_tickets WHERE ticketnumber=%s", (ticket_number,), fetch=False
     )
     return {"success": True, "message": f"Ticket {ticket_number} deleted"}
+
+
+class BulkDeleteRequest(BaseModel):
+    ticket_numbers: List[str]
+
+
+@router.post("/tickets/bulk-delete", tags=["tickets"])
+def bulk_delete_tickets(req: BulkDeleteRequest, payload: dict = Depends(get_current_user)):
+    """Bulk delete tickets. Admins/tech_leads can delete any; users can only delete their own."""
+    role    = payload.get("role")
+    user_id = payload.get("sub")
+
+    if not req.ticket_numbers:
+        raise HTTPException(status_code=400, detail="No tickets specified")
+
+    db = get_db_connection()
+    deleted = 0
+    for tn in req.ticket_numbers:
+        rows = db.execute_query("SELECT user_id FROM new_tickets WHERE ticketnumber=%s", (tn,))
+        if not rows:
+            continue
+        if role not in ("admin", "tech_lead") and rows[0].get("user_id") != user_id:
+            continue
+        db.execute_query(
+            "DELETE FROM session_steps WHERE session_id IN "
+            "(SELECT session_id FROM agent_sessions WHERE ticket_number=%s)",
+            (tn,), fetch=False,
+        )
+        for tbl, col in [
+            ("ticket_comments",    "ticket_number"),
+            ("ticket_attachments", "ticket_number"),
+            ("agent_sessions",     "ticket_number"),
+            ("ticket_feedback",    "ticket_number"),
+        ]:
+            db.execute_query(f"DELETE FROM {tbl} WHERE {col}=%s", (tn,), fetch=False)
+        db.execute_query("DELETE FROM new_tickets WHERE ticketnumber=%s", (tn,), fetch=False)
+        deleted += 1
+
+    return {"success": True, "deleted": deleted, "message": f"{deleted} ticket(s) deleted"}
 
 
 # ── E5: Feedback Loop ─────────────────────────────────────────────────────────
@@ -687,7 +791,17 @@ def _get_my_tickets_impl(status_filter, limit, payload):
         params.append(limit)
 
         rows = db.execute_query(base, tuple(params)) or []
-        tickets = [_serialize_row(dict(r)) for r in rows]
+        pl = get_picklist_loader()
+        label_fields = ["issuetype", "ticketcategory", "tickettype", "priority", "status"]
+        tickets = []
+        for r in rows:
+            t = _serialize_row(dict(r))
+            for field in label_fields:
+                if t.get(field):
+                    lbl = pl.get_label(field, str(t[field]))
+                    if lbl:
+                        t[f"{field}_label"] = lbl
+            tickets.append(t)
         return {"success": True, "tickets": tickets, "total": len(tickets)}
     except Exception as exc:
         log.error("GET /tickets/my failed for uid=%s role=%s: %s", payload.get("sub"), payload.get("role"), exc, exc_info=True)

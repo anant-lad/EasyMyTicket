@@ -93,18 +93,20 @@ def create_ticket_node(state: TicketState) -> Dict:
 _EXTRACT_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessage(content=(
         "You are an IT support metadata extractor. "
-        "Reply ONLY with valid JSON matching the schema — no prose, no markdown."
+        "Extract ONLY information that is explicitly stated in the ticket — do NOT invent or infer details. "
+        "If a field has no evidence in the ticket, use an empty list or null. "
+        "Reply ONLY with valid JSON — no prose, no markdown."
     )),
     HumanMessage(content=(
         "Ticket title: {title}\n"
         "Ticket description: {description}\n\n"
-        "Extract:\n"
+        "Extract only what is explicitly mentioned:\n"
         "{{\n"
         '  "urgency_level": "Critical|High|Medium|Low",\n'
-        '  "affected_systems": ["list of affected systems"],\n'
-        '  "error_messages": ["exact error text if any"],\n'
-        '  "user_impact": "brief impact description",\n'
-        '  "keywords": ["up to 8 key technical terms"]\n'
+        '  "affected_systems": ["only systems explicitly named in the ticket, or []"],\n'
+        '  "error_messages": ["only exact error text copied from the ticket, or []"],\n'
+        '  "user_impact": "brief impact description based on what is stated",\n'
+        '  "keywords": ["up to 8 technical terms actually mentioned"]\n'
         "}}"
     )),
 ])
@@ -112,23 +114,37 @@ _EXTRACT_PROMPT = ChatPromptTemplate.from_messages([
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessage(content=(
         "You are an IT support ticket classifier. "
-        "Classify the ticket using ONLY the provided picklist values. "
-        "Reply ONLY with valid JSON — no prose, no markdown."
+        "You MUST return a valid JSON object. "
+        "CRITICAL: For every field, you MUST copy one of the allowed strings EXACTLY — "
+        "do not paraphrase, do not use synonyms, do not invent new values. "
+        "If you return a string not in the allowed list the ticket will be miscategorised. "
+        "Reply ONLY with valid JSON — no prose, no markdown, no code fences."
     )),
     HumanMessage(content=(
-        "Ticket:\nTitle: {title}\nDescription: {description}\n"
-        "Extracted metadata: {metadata}\n\n"
-        "Picklist values:\n{picklist}\n\n"
-        "Return:\n"
+        "Ticket:\nTitle: {title}\nDescription: {description}\n\n"
+        "ALLOWED VALUES — copy these strings exactly, character for character:\n"
+        "{picklist}\n\n"
+        "Field guidance:\n"
+        "- issuetype: physical device/peripheral → Hardware; app/OS/driver issue → Software; "
+        "connectivity → Network; login/password/permissions → Account/Access; "
+        "email/Teams/calendar → Email/Collaboration; cloud/server/infra → Cloud/Infrastructure\n"
+        "- ticketcategory: something broke or stopped working → Incident; "
+        "user wants something new → Service Request; planned system change → Change; "
+        "recurring/root-cause investigation → Problem\n"
+        "- tickettype: broken thing needs fixing → Break/Fix; new setup or provisioning → New Request; "
+        "user asking how to do something → How-To; scheduled upkeep → Maintenance\n"
+        "- priority: service down / data loss → Critical; major impact → High; "
+        "limited workaround available → Medium; minor nuisance → Low\n\n"
+        "Return JSON with these exact keys:\n"
         "{{\n"
-        '  "issuetype": "<value from picklist>",\n'
-        '  "subissuetype": "<value or null>",\n'
-        '  "ticketcategory": "<value from picklist>",\n'
-        '  "tickettype": "<value from picklist>",\n'
-        '  "priority": "<value from picklist>",\n'
+        '  "issuetype": "<one string from ISSUETYPE above>",\n'
+        '  "subissuetype": "<one string from SUBISSUETYPE above, or null>",\n'
+        '  "ticketcategory": "<one string from TICKETCATEGORY above>",\n'
+        '  "tickettype": "<one string from TICKETTYPE above>",\n'
+        '  "priority": "<one string from PRIORITY above>",\n'
         '  "status": "Open",\n'
-        '  "category_label": "<human-readable category e.g. network|hardware|software|security|account_access|email_collaboration|cloud_infrastructure|backup_recovery|billing|general_inquiry>",\n'
-        '  "confidence": 0.0\n'
+        '  "category_label": "<one of: hardware|software|network|security|account_access|email_collaboration|cloud_infrastructure|backup_recovery|billing|general_inquiry>",\n'
+        '  "confidence": <number 0.1-1.0>\n'
         "}}"
     )),
 ])
@@ -202,40 +218,79 @@ def classify_node(state: TicketState) -> Dict:
         log.warning("Semantic search failed: %s", e)
         errors.append(f"semantic_search: {e}")
 
+    # Warn when classification model returned all-null (free/fallback model failure)
+    if not classification.get("issuetype") and not classification.get("priority"):
+        log.warning(
+            "classify_node: LLM returned all-null classification for %s (confidence=%.1f) — "
+            "using extracted_metadata priority=%s as fallback",
+            state["ticket_number"],
+            float(classification.get("confidence", 0.0)),
+            priority,
+        )
+
     # Persist classification to DB — convert label strings → picklist codes
+    # Use derived `priority` (from extracted_metadata urgency) as fallback when LLM returns null.
+    # Skip null fields rather than overwriting existing DB values with null.
     try:
         db = DatabaseConnection()
         pl = get_picklist_loader()
 
         def to_code(field: str, label):
+            """Convert a label or code to the stored code.
+            Falls back to fuzzy matching when the LLM returns a near-miss label.
+            Returns None only when no reasonable match exists."""
             if label is None:
                 return None
-            code = pl.get_value(field, str(label))
+            label_str = str(label).strip()
+            # Try exact label → code reverse lookup
+            code = pl.get_value(field, label_str)
             if code:
                 return code
-            # already a code? accept if it's a known key
-            if str(label) in pl.get_all_values_for_field(field):
-                return str(label)
-            return str(label)  # store as-is as last resort
+            # Already a valid code?
+            if label_str in pl.get_all_values_for_field(field):
+                return label_str
+            # Fuzzy match — catch LLM near-misses like "IT Support" → "General Inquiry"
+            import difflib
+            all_labels = list(pl.get_all_values_for_field(field).values())
+            matches = difflib.get_close_matches(label_str, all_labels, n=1, cutoff=0.4)
+            if matches:
+                fuzzy_code = pl.get_value(field, matches[0])
+                if fuzzy_code:
+                    log.warning(
+                        "classify_node: fuzzy-matched %r → %r (code=%s) for field=%s",
+                        label_str, matches[0], fuzzy_code, field,
+                    )
+                    return fuzzy_code
+            log.warning("classify_node: value %r not in picklist for field=%s — skipping", label_str, field)
+            return None
+
+        # Build SET clause dynamically — only update fields that have a value
+        effective_priority = to_code("priority", classification.get("priority")) or priority
+        effective_issuetype = to_code("issuetype", classification.get("issuetype"))
+        effective_category  = to_code("ticketcategory", classification.get("ticketcategory"))
+        effective_type      = to_code("tickettype", classification.get("tickettype"))
+
+        set_parts = ["priority=%s"]
+        params: list = [effective_priority]
+        if effective_issuetype:
+            set_parts.append("issuetype=%s")
+            params.append(effective_issuetype)
+        if effective_category:
+            set_parts.append("ticketcategory=%s")
+            params.append(effective_category)
+        if effective_type:
+            set_parts.append("tickettype=%s")
+            params.append(effective_type)
+        params.append(state["ticket_number"])
 
         db.execute_query(
-            """
-            UPDATE new_tickets
-            SET issuetype=%s, ticketcategory=%s, tickettype=%s, priority=%s
-            WHERE ticketnumber=%s
-            """,
-            (
-                to_code("issuetype",      classification.get("issuetype")),
-                to_code("ticketcategory", classification.get("ticketcategory")),
-                to_code("tickettype",     classification.get("tickettype")),
-                to_code("priority",       classification.get("priority")),
-                state["ticket_number"],
-            ),
+            f"UPDATE new_tickets SET {', '.join(set_parts)} WHERE ticketnumber=%s",
+            tuple(params),
         )
-        log.info("Classification persisted for %s: issuetype=%s priority=%s",
-                 state["ticket_number"],
-                 to_code("issuetype", classification.get("issuetype")),
-                 to_code("priority",  classification.get("priority")))
+        log.info(
+            "Classification persisted for %s: issuetype=%s ticketcategory=%s priority=%s",
+            state["ticket_number"], effective_issuetype, effective_category, effective_priority,
+        )
     except Exception as e:
         log.warning("Could not persist classification: %s", e)
 
@@ -356,11 +411,13 @@ def agent_task_node(state: TicketState) -> Dict:
     """
     Launch an agentic remediation session for this ticket on the user's device.
 
-    If the device is connected: starts the multi-turn LLM remediation loop
-    asynchronously (does not block the graph — the session runs in background).
+    Every agent-routed ticket gets DUAL ASSIGNMENT:
+      - A human oversight/fallback tech is assigned to new_tickets.assigned_tech_id
+      - An agentic session runs (or ticket queued as Pending Agent if device offline)
 
-    If the device is offline: marks the ticket 'Pending Agent' so the
-    session starts automatically when the device reconnects.
+    If the device is offline or unknown: marks the ticket 'Pending Agent'.
+    When the device reconnects, _auto_start_pending_sessions picks it up.
+    If the agent fails: escalates to the already-assigned tech with email notification.
     """
     import asyncio as _asyncio
     from routes.agent_routes import is_agent_connected
@@ -369,46 +426,109 @@ def agent_task_node(state: TicketState) -> Dict:
     device_id     = state.get("device_id") or ""
     ticket_number = state["ticket_number"]
     errors        = list(state.get("errors", []))
+
+    # ── 1. Resolve device from connected agents if not in state ───────────────
+    if not device_id:
+        try:
+            from routes.agent_routes import get_connected_device_for_user
+            device_id = get_connected_device_for_user(state.get("user_id", "")) or ""
+        except Exception as e:
+            log.warning("Device lookup failed: %s", e)
+
+    # Cross-pod fallback: agent may be connected to another pod (in-memory dict is pod-local).
+    # If we still have no device_id, check `devices` table for a recently-seen device.
+    if not device_id:
+        try:
+            db_dev = DatabaseConnection()
+            rows = db_dev.execute_query(
+                "SELECT device_id FROM devices WHERE user_id=%s "
+                "AND last_seen > NOW() - INTERVAL '5 minutes' ORDER BY last_seen DESC LIMIT 1",
+                (state.get("user_id", ""),),
+            )
+            if rows:
+                device_id = rows[0]["device_id"]
+                log.info(
+                    "Cross-pod device found for user %s: device=%s (agent on another pod)",
+                    state.get("user_id"), device_id,
+                )
+        except Exception as e:
+            log.warning("Cross-pod device DB lookup failed: %s", e)
+
+    # ── 2. Get actual device OS from registered agent metadata ────────────────
+    device_os = "Unknown"
+    if device_id:
+        try:
+            from routes.agent_routes import get_device_metadata
+            meta = get_device_metadata(device_id)
+            device_os = meta.get("os") or meta.get("platform") or "Unknown"
+        except Exception:
+            pass
+
     agent_connected = bool(device_id and is_agent_connected(device_id))
 
-    # Auto-assign a tech lead (or least-loaded tech) as oversight technician
-    oversight_tech_id = None
+    # Cross-pod check: is_agent_connected() is in-memory (per-pod). If False, verify
+    # via DB — if the device has last_seen within 3 minutes it's connected on another pod.
+    if not agent_connected and device_id:
+        try:
+            db_cp = DatabaseConnection()
+            rows = db_cp.execute_query(
+                "SELECT device_id FROM devices WHERE device_id=%s "
+                "AND last_seen > NOW() - INTERVAL '3 minutes'",
+                (device_id,),
+            )
+            if rows:
+                agent_connected = True
+                log.info(
+                    "Cross-pod agent detected for ticket=%s device=%s (agent on another pod, last_seen recent)",
+                    ticket_number, device_id,
+                )
+        except Exception as e:
+            log.warning("Cross-pod agent check failed: %s", e)
+
+    log.info(
+        "agent_task_node: ticket=%s device=%s agent_connected=%s device_os=%s",
+        ticket_number, device_id or "none", agent_connected, device_os,
+    )
+
+    # ── 3. DUAL ASSIGN: pick oversight/fallback tech and set on the ticket ────
+    # Tech can monitor the session live and takes over if agent escalates.
+    oversight_tech_id   = None
     oversight_tech_name = None
+    oversight_tech_mail = ""
     try:
+        from src.agents.smart_ticket_assignment import SmartAssignmentAgent
         db_ov = DatabaseConnection()
-        ov_rows = db_ov.execute_query(
-            """SELECT tech_id, tech_name, tech_mail
-               FROM technician_data
-               WHERE is_active = TRUE
-               ORDER BY
-                 CASE WHEN tech_role IN ('tech_lead','admin') THEN 0 ELSE 1 END,
-                 (SELECT COUNT(*) FROM new_tickets WHERE assigned_tech_id = technician_data.tech_id
-                  AND status NOT IN ('Resolved','Closed')) ASC
-               LIMIT 1""",
+        assigner = SmartAssignmentAgent(db_ov)
+        oversight_tech_id = assigner.assign_ticket(
+            ticket_data={
+                "title":        state["title"],
+                "description":  state["description"],
+                "ticketnumber": ticket_number,
+            },
+            classification=state.get("classification", {}),
         )
-        if ov_rows:
-            oversight_tech_id   = ov_rows[0]["tech_id"]
-            oversight_tech_name = ov_rows[0]["tech_name"]
-            oversight_tech_mail = ov_rows[0].get("tech_mail", "")
+        if oversight_tech_id:
+            # Fetch name/mail for notifications
+            tech_row = db_ov.execute_query(
+                "SELECT tech_name, tech_mail FROM technician_data WHERE tech_id=%s",
+                (oversight_tech_id,),
+            )
+            if tech_row:
+                oversight_tech_name = tech_row[0]["tech_name"]
+                oversight_tech_mail = tech_row[0].get("tech_mail", "")
+            # Write assigned_tech_id to ticket so it appears in tech's dashboard now
+            db_ov.execute_query(
+                "UPDATE new_tickets SET assigned_tech_id=%s WHERE ticketnumber=%s",
+                (oversight_tech_id, ticket_number), fetch=False,
+            )
             log.info("Oversight tech assigned: %s (%s) for ticket %s",
                      oversight_tech_name, oversight_tech_id, ticket_number)
-        else:
-            # Fallback: any active tech
-            fb = db_ov.execute_query(
-                "SELECT tech_id, tech_name, tech_mail FROM technician_data WHERE is_active=TRUE LIMIT 1"
-            )
-            if fb:
-                oversight_tech_id   = fb[0]["tech_id"]
-                oversight_tech_name = fb[0]["tech_name"]
-                oversight_tech_mail = fb[0].get("tech_mail", "")
     except Exception as e:
-        log.warning("Could not assign oversight tech: %s", e)
+        log.warning("Oversight tech assignment failed: %s", e)
+        errors.append(f"oversight_assignment: {e}")
 
+    # ── 4. Launch session or queue as Pending Agent ───────────────────────────
     if agent_connected:
-        # Fire-and-forget: schedule agentic remediation on the main uvicorn event loop.
-        # agent_task_node runs in a thread-pool executor (no running loop here), so
-        # we must use run_coroutine_threadsafe to reach the WebSocket's event loop.
-        device_os = state.get("extracted_metadata", {}).get("device_os", "Unknown")
         try:
             from src.graph.remediation_graph import run_remediation_session
             from routes.agent_routes import _main_loop, is_agent_auto_mode
@@ -435,10 +555,17 @@ def agent_task_node(state: TicketState) -> Dict:
             log.warning("Could not launch remediation session: %s", e)
             errors.append(f"session_launch: {e}")
             agent_connected = False
-    else:
-        log.info("Device %r offline — ticket %s queued as Pending Agent", device_id, ticket_number)
+
+    if not agent_connected:
+        log.info("Device %r offline — ticket %s queued as Pending Agent", device_id or "none", ticket_number)
         try:
             db = DatabaseConnection()
+            if device_id:
+                # Persist the resolved device_id so reconnect can find this ticket via Query 1
+                db.execute_query(
+                    "UPDATE new_tickets SET device_id=%s WHERE ticketnumber=%s AND (device_id IS NULL OR device_id='')",
+                    (device_id, ticket_number), fetch=False,
+                )
             db.execute_query(
                 "UPDATE new_tickets SET status='Pending Agent' WHERE ticketnumber=%s",
                 (ticket_number,), fetch=False,
@@ -446,12 +573,11 @@ def agent_task_node(state: TicketState) -> Dict:
         except Exception as e:
             errors.append(f"pending_status: {e}")
 
-    # agent_task_id is now the session_id — set after session creates it
-    # For now return None; the session will update the DB directly
     return {
-        "agent_task_id": None,
+        "agent_task_id":   None,
         "agent_connected": agent_connected,
-        "errors": errors,
+        "assigned_tech_id": oversight_tech_id,
+        "errors":          errors,
     }
 
 

@@ -15,6 +15,8 @@
 | 3 | [03_FUNCTIONALITY_FLOWS.md](03_FUNCTIONALITY_FLOWS.md) | Feature-by-feature flows — ticket pipeline, agentic repair, semantic search, frontend, observability |
 | 4 | [04_TECHNICAL_DETAILS.md](04_TECHNICAL_DETAILS.md) | LLM strategy, connection pooling, WebSocket architecture, security model, config reference |
 | 5 | [05_COMPLETE_FLOW_DIAGRAM.md](05_COMPLETE_FLOW_DIAGRAM.md) | Master end-to-end diagrams — full system, ticket lifecycle, remediation loop, CI/CD |
+| 6 | [06_DATABASE_ER_DIAGRAM.md](06_DATABASE_ER_DIAGRAM.md) | Database schema docs — all 20 tables, FK relationships, status flows |
+| 7 | [database_er_diagram.svg](database_er_diagram.svg) | Visual ER diagram — all tables with columns, color-coded by domain |
 
 ---
 

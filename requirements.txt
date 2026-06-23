@@ -57,3 +57,7 @@ passlib[bcrypt]>=1.7.4
 # Multipart form / file uploads (required by FastAPI for Form + UploadFile)
 python-multipart>=0.0.9
 
+# KB data fetch script (scripts/fetch_kb_data.py) — not needed at runtime
+beautifulsoup4>=4.12.0
+gitpython>=3.1.0
+

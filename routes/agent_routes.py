@@ -58,6 +58,9 @@ def is_agent_auto_mode(device_id: str) -> bool:
 # coroutines on the uvicorn loop via asyncio.run_coroutine_threadsafe.
 _main_loop: asyncio.AbstractEventLoop = None
 
+# Tracks whether the periodic session-starter background task is already running on this pod.
+_periodic_starter_running: bool = False
+
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
@@ -105,8 +108,18 @@ async def agent_websocket(device_id: str, ws: WebSocket):
     await ws.accept()
     _connected_agents[device_id] = ws
     _agent_auto_mode[device_id] = False  # updated on register message
+
+    global _periodic_starter_running
+    if not _periodic_starter_running:
+        _periodic_starter_running = True
+        asyncio.create_task(_periodic_session_starter())
     if authenticated_user_id:
         _user_to_device[authenticated_user_id] = device_id
+        # Persist user→device mapping to DB so it survives pod restarts
+        try:
+            _db_set_device_user(device_id, authenticated_user_id)
+        except Exception as _e:
+            log.warning("Could not persist device user_id for %s: %s", device_id, _e)
     log.info("Agent connected: %s user=%s (total=%d)", device_id, authenticated_user_id or "anonymous", len(_connected_agents))
 
     try:
@@ -230,7 +243,19 @@ async def dispatch_tool_call(
 
 
 def is_agent_connected(device_id: str) -> bool:
-    return device_id in _connected_agents
+    if device_id in _connected_agents:
+        return True
+    # Cross-pod / status-badge fallback: check DB last_seen within 90s
+    try:
+        db = DatabaseConnection()
+        rows = db.execute_query(
+            "SELECT device_id FROM devices WHERE device_id=%s "
+            "AND last_seen > NOW() - INTERVAL '90 seconds'",
+            (device_id,),
+        )
+        return bool(rows)
+    except Exception:
+        return False
 
 
 def get_connected_device_for_user(user_id: str) -> str | None:
@@ -386,19 +411,60 @@ async def request_tier2_approval(session_id: str, command: str, reasoning: str,
 
 
 async def _auto_start_pending_sessions(device_id: str):
-    """Called when an agent reconnects — kick off remediation for queued tickets."""
+    """Called when an agent reconnects — kick off remediation for queued tickets.
+
+    Checks two sets of tickets:
+    1. Tickets where device_id matches (device was known at submission time).
+    2. Tickets for this user with no device_id (submitted while agent was offline).
+    """
     db = DatabaseConnection()
+
+    # Existing: tickets keyed to this specific device
     rows = db.execute_query(
-        "SELECT ticketnumber, title, description, issuetype, user_id, priority "
+        "SELECT ticketnumber, title, description, issuetype, user_id, priority, assigned_tech_id "
         "FROM new_tickets WHERE status='Pending Agent' AND device_id=%s",
         (device_id,),
-    )
+    ) or []
+
+    # New: tickets for this user submitted without a device_id
+    user_id = next((u for u, d in _user_to_device.items() if d == device_id), None)
+    if not user_id:
+        # DB fallback — in-memory dict is lost on pod restart but devices.user_id persists
+        try:
+            fb = db.execute_query("SELECT user_id FROM devices WHERE device_id=%s", (device_id,))
+            if fb and fb[0].get("user_id"):
+                user_id = fb[0]["user_id"]
+                _user_to_device[user_id] = device_id  # restore in-memory mapping
+                log.info("Restored user_id=%s for device %s from devices table", user_id, device_id)
+        except Exception as _e:
+            log.warning("DB fallback user_id lookup failed for device %s: %s", device_id, _e)
+    if user_id:
+        user_rows = db.execute_query(
+            "SELECT ticketnumber, title, description, issuetype, user_id, priority, assigned_tech_id "
+            "FROM new_tickets WHERE status='Pending Agent' AND user_id=%s "
+            "AND (device_id IS NULL OR device_id='')",
+            (user_id,),
+        ) or []
+        if user_rows:
+            for r in user_rows:
+                try:
+                    db.execute_query(
+                        "UPDATE new_tickets SET device_id=%s WHERE ticketnumber=%s",
+                        (device_id, r["ticketnumber"]), fetch=False,
+                    )
+                except Exception as e:
+                    log.warning("Could not set device_id on ticket %s: %s", r["ticketnumber"], e)
+            rows = rows + user_rows
+
     if not rows:
         return
+
     from src.graph.remediation_graph import run_remediation_session
+    meta = get_device_metadata(device_id)
+    device_os = meta.get("os") or meta.get("platform") or "Unknown"
+
     for row in rows:
-        log.info("Resuming pending-agent ticket %s for device %s",
-                 row["ticketnumber"], device_id)
+        log.info("Resuming pending-agent ticket %s for device %s", row["ticketnumber"], device_id)
         asyncio.create_task(run_remediation_session(
             ticket_number=row["ticketnumber"],
             device_id=device_id,
@@ -406,7 +472,23 @@ async def _auto_start_pending_sessions(device_id: str):
             description=row.get("description", ""),
             category=row.get("issuetype", "general_inquiry"),
             user_id=row.get("user_id", ""),
+            device_os=device_os,
+            auto_mode=is_agent_auto_mode(device_id),
+            oversight_tech_id=row.get("assigned_tech_id"),
         ))
+
+
+async def _periodic_session_starter():
+    """Every 30s, check for Pending Agent tickets whose device is connected to THIS pod.
+    Handles tickets that arrived after the agent registered (gap: _auto_start fires once on register only)."""
+    await asyncio.sleep(15)  # brief delay to let startup settle
+    while True:
+        try:
+            for device_id in list(_connected_agents.keys()):
+                await _auto_start_pending_sessions(device_id)
+        except Exception as e:
+            log.warning("Periodic session starter error: %s", e)
+        await asyncio.sleep(30)
 
 
 # ── Session status endpoints ──────────────────────────────────────────────────
@@ -661,6 +743,15 @@ def _save_task_result(task_id, status, output, exit_code):
         )
     except Exception as e:
         log.error("Failed to save task result for %s: %s", task_id, e)
+
+
+def _db_set_device_user(device_id: str, user_id: str):
+    """Persist user_id onto the devices row so _auto_start_pending_sessions can find it after a pod restart."""
+    db = DatabaseConnection()
+    db.execute_query(
+        "UPDATE devices SET user_id=%s WHERE device_id=%s",
+        (user_id, device_id), fetch=False,
+    )
 
 
 def _update_device_last_seen(device_id: str, device_info: dict):

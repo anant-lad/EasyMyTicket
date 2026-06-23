@@ -379,6 +379,24 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
         ["bash", "-c", "echo 'v4l2 not applicable on macOS'"],
         ["powershell", "-NoProfile", "-Command", "echo 'v4l2 not applicable on Windows'"],
     ),
+    "camera_usb_detect": (
+        ["bash", "-c", "lsusb | grep -i -E 'camera|webcam|imaging|uvc|video' || echo 'No camera USB device found'"],
+        ["bash", "-c", "system_profiler SPCameraDataType 2>/dev/null | head -10 || echo 'No camera found'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-PnpDevice | Where-Object {$_.FriendlyName -match 'camera|webcam'} | "
+         "Select-Object Status,FriendlyName | ConvertTo-Json -Compress"],
+    ),
+    "camera_dmesg_errors": (
+        ["bash", "-c", "dmesg | grep -i -E 'uvc|camera|video|webcam' | tail -30 || echo 'No camera messages in dmesg'"],
+        ["bash", "-c", "log show --predicate \"subsystem contains 'camera'\" --last 1h 2>/dev/null | tail -20 || echo 'No camera log entries'"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-EventLog System -Source *camera* -Newest 10 -ErrorAction SilentlyContinue | ConvertTo-Json -Compress"],
+    ),
+    "camera_module_info": (
+        ["bash", "-c", "modinfo uvcvideo 2>/dev/null | head -8 || echo 'uvcvideo module not found'"],
+        ["bash", "-c", "echo 'macOS uses AVFoundation — no kernel module check needed'"],
+        ["powershell", "-NoProfile", "-Command", "echo 'Windows camera uses built-in UVC class driver'"],
+    ),
 
     # Security
     "firewall_status": (
@@ -848,6 +866,13 @@ def execute(
 
     if not cmd:
         return 0, f"Command '{command}' is not applicable on {_OS}.", ""
+
+    # On Linux, make every top-level `sudo` non-interactive so the agent never
+    # hangs waiting for a password when running headlessly under systemd.
+    # Sudoers must grant NOPASSWD for the relevant commands; without that the
+    # call fails immediately with a clear error instead of blocking forever.
+    if _OS == "Linux" and cmd[0] == "sudo" and "-n" not in cmd:
+        cmd.insert(1, "-n")
 
     if command in ("delete_file", "delete_directory", "clear_app_cache", "reset_app_prefs"):
         path = args.get("PATH") or args.get("path") or args.get("CACHE_PATH") or ""
@@ -1758,7 +1783,7 @@ async def agent_loop(stop_event: asyncio.Event):
                 await handle_task(msg, ws)
 
             elif msg_type == "tool_call":
-                asyncio.ensure_future(handle_tool_call(msg, ws))
+                asyncio.create_task(handle_tool_call(msg, ws))
 
             elif msg_type == "ping":
                 await ws.send(json.dumps({"type": "pong"}))
@@ -1782,7 +1807,7 @@ async def run_with_reconnect():
         log.info("Shutdown signal received")
         stop_event.set()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGTERM, _signal_handler)
         loop.add_signal_handler(signal.SIGINT,  _signal_handler)

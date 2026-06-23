@@ -1,0 +1,500 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2100 1485" width="297mm" height="210mm" font-family="Arial, sans-serif">
+<defs>
+  <filter id="sh" x="-3%" y="-3%" width="110%" height="110%">
+    <feDropShadow dx="1" dy="2" stdDeviation="2" flood-color="#00000020"/>
+  </filter>
+  <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#7F8C8D"/>
+  </marker>
+  <marker id="arrd" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#BDC3C7"/>
+  </marker>
+</defs>
+<rect width="2100" height="1485" fill="#F0F3F7"/>
+<rect x="0" y="0" width="2100" height="52" fill="#1A252F"/>
+<text x="1050" y="34" text-anchor="middle" font-size="24" font-weight="bold" fill="white">EasyMyTicket — Database Entity Relationship Diagram</text>
+<rect x="0" y="52" width="2100" height="26" fill="white" stroke="#DDD" stroke-width="1"/>
+<rect x="10" y="59" width="14" height="10" fill="#C9A227" rx="2"/>
+<text x="28" y="68" font-size="12" fill="#333">PK  Primary Key</text>
+<rect x="170" y="59" width="14" height="10" fill="#2471A3" rx="2"/>
+<text x="188" y="68" font-size="12" fill="#333">FK  Foreign Key</text>
+<rect x="330" y="59" width="14" height="10" fill="#CB4335" rx="2"/>
+<text x="348" y="68" font-size="12" fill="#333">UQ  Unique</text>
+<line x1="460" y1="64" x2="490" y2="64" stroke="#7F8C8D" stroke-width="2" marker-end="url(#arr)"/>
+<text x="495" y="68" font-size="12" fill="#333">FK Reference</text>
+<line x1="610" y1="64" x2="640" y2="64" stroke="#BDC3C7" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<text x="645" y="68" font-size="12" fill="#333">Loose / Long FK</text>
+<rect x="760" y="59" width="14" height="10" fill="#2471A3" rx="2"/>
+<text x="778" y="68" font-size="12" fill="#333">Identity / Auth</text>
+<rect x="900" y="59" width="14" height="10" fill="#16A085" rx="2"/>
+<text x="918" y="68" font-size="12" fill="#333">Devices</text>
+<rect x="990" y="59" width="14" height="10" fill="#D35400" rx="2"/>
+<text x="1008" y="68" font-size="12" fill="#333">Tickets</text>
+<rect x="1090" y="59" width="14" height="10" fill="#1E8449" rx="2"/>
+<text x="1108" y="68" font-size="12" fill="#333">Chat</text>
+<rect x="1180" y="59" width="14" height="10" fill="#7D3C98" rx="2"/>
+<text x="1198" y="68" font-size="12" fill="#333">Agent / AI</text>
+<rect x="1300" y="59" width="14" height="10" fill="#616A6B" rx="2"/>
+<text x="1318" y="68" font-size="12" fill="#333">Archive / Observability</text>
+
+<!-- ═══════════ FK LINES ═══════════ -->
+<!-- user_data → organizations -->
+<polyline points="400,336 430,336 430,63 1050,63 1050,78" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- technician_data → organizations -->
+<polyline points="1280,314 1250,314 1250,63 1050,63 1050,78" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- new_tickets.user_id → user_data -->
+<polyline points="420,336 400,336" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- new_tickets.assigned_tech_id → technician_data -->
+<polyline points="1260,358 1280,358" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- new_tickets.device_id → devices -->
+<polyline points="1260,380 1665,380 1665,272 1680,272" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- new_tickets self-ref -->
+<polyline points="420,402 402,402 402,210 420,210" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_comments → new_tickets -->
+<polyline points="210,476 210,466 640,466 640,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_attachments → new_tickets -->
+<polyline points="610,476 610,466 840,466 840,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_attachments.comment_id → ticket_comments -->
+<polyline points="420,568 400,568" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_assignments → new_tickets -->
+<polyline points="1010,476 1010,466 940,466 940,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_assignments.tech_id → technician_data -->
+<polyline points="1200,568 1240,568 1240,381 1470,381 1470,366" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- ticket_feedback → new_tickets -->
+<polyline points="1440,476 1440,466 1210,466 1210,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- chat_sessions.user_id → user_data -->
+<polyline points="20,712 6,712 6,283 20,283" fill="none" stroke="#BDC3C7" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<!-- chat_sessions.ticket_number → new_tickets -->
+<polyline points="400,734 410,734 410,466 540,466 540,454" fill="none" stroke="#BDC3C7" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<!-- chat_messages → chat_sessions -->
+<polyline points="420,712 400,712" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_sessions → new_tickets -->
+<polyline points="1050,642 1050,476 1040,476 1040,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_sessions.device_id → devices -->
+<polyline points="1280,734 1665,734 1665,324 1680,324" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_sessions.oversight_tech_id → technician_data -->
+<polyline points="1280,756 1470,756 1470,366" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_sessions.user_id → user_data -->
+<polyline points="820,778 6,778 6,303 20,303" fill="none" stroke="#BDC3C7" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<!-- session_steps → agent_sessions -->
+<polyline points="1300,712 1280,712" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_tasks → new_tickets -->
+<polyline points="400,922 410,922 410,630 590,630 590,454" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- agent_tasks.device_id → devices -->
+<polyline points="400,944 1660,944 1660,339 1680,339" fill="none" stroke="#7F8C8D" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+<!-- daily_reports.device_id → devices -->
+<polyline points="800,922 1660,922 1660,329 1680,329" fill="none" stroke="#7F8C8D" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+<!-- daily_reports.user_id → user_data -->
+<polyline points="420,944 6,944 6,323 20,323" fill="none" stroke="#BDC3C7" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<!-- technician_attendance → technician_data -->
+<polyline points="1260,922 1470,922 1470,366" fill="none" stroke="#7F8C8D" stroke-width="1.5" marker-end="url(#arr)"/>
+<!-- llm_traces → new_tickets -->
+<polyline points="1280,922 1670,922 1670,630 1230,630 1230,454" fill="none" stroke="#BDC3C7" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+
+<!-- ═══════════ TABLES ═══════════ -->
+
+<!-- organizations -->
+<rect x="880" y="78" width="340" height="100" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="880" y="78" width="340" height="32" fill="#2471A3" rx="4"/>
+<rect x="880" y="98" width="340" height="12" fill="#2471A3"/>
+<text x="1050" y="99" text-anchor="middle" font-size="17" font-weight="bold" fill="white">organizations</text>
+<rect x="881" y="110" width="338" height="22" fill="#FEF9E7"/>
+<rect x="888" y="114" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="900" y="125" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="916" y="125" font-size="15" font-family="Courier New,monospace" fill="#1A252F">org_id  TEXT</text>
+<rect x="881" y="132" width="338" height="22" fill="#F8F9FA"/>
+<text x="892" y="147" font-size="15" font-family="Courier New,monospace" fill="#1A252F">org_name  TEXT NOT NULL</text>
+<rect x="881" y="154" width="338" height="22" fill="white"/>
+<text x="892" y="169" font-size="15" font-family="Courier New,monospace" fill="#1A252F">created_at  TSTZ</text>
+
+<!-- user_data -->
+<rect x="20" y="200" width="380" height="166" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="20" y="200" width="380" height="32" fill="#2471A3" rx="4"/>
+<rect x="20" y="220" width="380" height="12" fill="#2471A3"/>
+<text x="210" y="221" text-anchor="middle" font-size="17" font-weight="bold" fill="white">user_data</text>
+<rect x="21" y="232" width="378" height="22" fill="#FEF9E7"/>
+<rect x="28" y="236" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="40" y="247" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="56" y="247" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_id  VARCHAR</text>
+<rect x="21" y="254" width="378" height="22" fill="#F8F9FA"/>
+<text x="32" y="269" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_name  VARCHAR</text>
+<rect x="21" y="276" width="378" height="22" fill="#FDEDEC"/>
+<rect x="28" y="280" width="24" height="14" fill="#CB4335" rx="2"/>
+<text x="40" y="291" text-anchor="middle" font-size="10" font-weight="bold" fill="white">UQ</text>
+<text x="56" y="291" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_mail  VARCHAR</text>
+<rect x="21" y="298" width="378" height="22" fill="#F8F9FA"/>
+<text x="32" y="313" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_password  VARCHAR</text>
+<rect x="21" y="320" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="324" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="335" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="335" font-size="15" font-family="Courier New,monospace" fill="#1A252F">org_id → organizations</text>
+<rect x="21" y="342" width="378" height="22" fill="#FDEDEC"/>
+<rect x="28" y="346" width="24" height="14" fill="#CB4335" rx="2"/>
+<text x="40" y="357" text-anchor="middle" font-size="10" font-weight="bold" fill="white">UQ</text>
+<text x="56" y="357" font-size="15" font-family="Courier New,monospace" fill="#1A252F">agent_api_key  TEXT</text>
+
+<!-- new_tickets -->
+<rect x="420" y="200" width="840" height="254" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="420" y="200" width="840" height="32" fill="#D35400" rx="4"/>
+<rect x="420" y="220" width="840" height="12" fill="#D35400"/>
+<text x="840" y="221" text-anchor="middle" font-size="17" font-weight="bold" fill="white">new_tickets</text>
+<rect x="421" y="232" width="838" height="22" fill="#FEF9E7"/>
+<rect x="428" y="236" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="440" y="247" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="456" y="247" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticketnumber  VARCHAR  (PK + UQ)</text>
+<rect x="421" y="254" width="838" height="22" fill="#F8F9FA"/>
+<text x="432" y="269" font-size="15" font-family="Courier New,monospace" fill="#1A252F">title  TEXT NOT NULL</text>
+<rect x="421" y="276" width="838" height="22" fill="white"/>
+<text x="432" y="291" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  VARCHAR  (Open / In Progress / ...)</text>
+<rect x="421" y="298" width="838" height="22" fill="#F8F9FA"/>
+<text x="432" y="313" font-size="15" font-family="Courier New,monospace" fill="#1A252F">priority  /  issuetype  /  source</text>
+<rect x="421" y="320" width="838" height="22" fill="#EBF5FB"/>
+<rect x="428" y="324" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="335" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="335" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_id → user_data</text>
+<rect x="421" y="342" width="838" height="22" fill="#EBF5FB"/>
+<rect x="428" y="346" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="357" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="357" font-size="15" font-family="Courier New,monospace" fill="#1A252F">assigned_tech_id → technician_data</text>
+<rect x="421" y="364" width="838" height="22" fill="#EBF5FB"/>
+<rect x="428" y="368" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="379" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="379" font-size="15" font-family="Courier New,monospace" fill="#1A252F">device_id → devices</text>
+<rect x="421" y="386" width="838" height="22" fill="#EBF5FB"/>
+<rect x="428" y="390" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="401" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="401" font-size="15" font-family="Courier New,monospace" fill="#1A252F">parent_ticket → new_tickets (self)</text>
+<rect x="421" y="408" width="838" height="22" fill="white"/>
+<text x="432" y="423" font-size="15" font-family="Courier New,monospace" fill="#1A252F">createdate  /  resolved_by_agent</text>
+<rect x="421" y="430" width="838" height="22" fill="#F8F9FA"/>
+<text x="432" y="445" font-size="15" font-family="Courier New,monospace" fill="#1A252F">estimatedhours  /  resolution  / ...</text>
+
+<!-- technician_data -->
+<rect x="1280" y="200" width="380" height="166" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1280" y="200" width="380" height="32" fill="#2471A3" rx="4"/>
+<rect x="1280" y="220" width="380" height="12" fill="#2471A3"/>
+<text x="1470" y="221" text-anchor="middle" font-size="17" font-weight="bold" fill="white">technician_data</text>
+<rect x="1281" y="232" width="378" height="22" fill="#FEF9E7"/>
+<rect x="1288" y="236" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="1300" y="247" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="1316" y="247" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_id  VARCHAR</text>
+<rect x="1281" y="254" width="378" height="22" fill="#F8F9FA"/>
+<text x="1292" y="269" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_name  VARCHAR</text>
+<rect x="1281" y="276" width="378" height="22" fill="#FDEDEC"/>
+<rect x="1288" y="280" width="24" height="14" fill="#CB4335" rx="2"/>
+<text x="1300" y="291" text-anchor="middle" font-size="10" font-weight="bold" fill="white">UQ</text>
+<text x="1316" y="291" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_mail  VARCHAR</text>
+<rect x="1281" y="298" width="378" height="22" fill="#EBF5FB"/>
+<rect x="1288" y="302" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="1300" y="313" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="1316" y="313" font-size="15" font-family="Courier New,monospace" fill="#1A252F">org_id → organizations</text>
+<rect x="1281" y="320" width="378" height="22" fill="white"/>
+<text x="1292" y="335" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_role  /  is_admin  /  skills</text>
+<rect x="1281" y="342" width="378" height="22" fill="#F8F9FA"/>
+<text x="1292" y="357" font-size="15" font-family="Courier New,monospace" fill="#1A252F">no_tickets_assigned  /  current_workload</text>
+
+<!-- devices -->
+<rect x="1680" y="200" width="400" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1680" y="200" width="400" height="32" fill="#16A085" rx="4"/>
+<rect x="1680" y="220" width="400" height="12" fill="#16A085"/>
+<text x="1880" y="221" text-anchor="middle" font-size="17" font-weight="bold" fill="white">devices</text>
+<rect x="1681" y="232" width="398" height="22" fill="#FEF9E7"/>
+<rect x="1688" y="236" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="1700" y="247" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="1716" y="247" font-size="15" font-family="Courier New,monospace" fill="#1A252F">device_id  TEXT</text>
+<rect x="1681" y="254" width="398" height="22" fill="#F8F9FA"/>
+<text x="1692" y="269" font-size="15" font-family="Courier New,monospace" fill="#1A252F">hostname  TEXT</text>
+<rect x="1681" y="276" width="398" height="22" fill="white"/>
+<text x="1692" y="291" font-size="15" font-family="Courier New,monospace" fill="#1A252F">os_type  /  os_version</text>
+<rect x="1681" y="298" width="398" height="22" fill="#F8F9FA"/>
+<text x="1692" y="313" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ip_address  TEXT</text>
+<rect x="1681" y="320" width="398" height="22" fill="white"/>
+<text x="1692" y="335" font-size="15" font-family="Courier New,monospace" fill="#1A252F">first_seen  /  last_seen  TSTZ</text>
+
+<!-- ticket_comments -->
+<rect x="20" y="476" width="380" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="20" y="476" width="380" height="32" fill="#D35400" rx="4"/>
+<rect x="20" y="496" width="380" height="12" fill="#D35400"/>
+<text x="210" y="497" text-anchor="middle" font-size="17" font-weight="bold" fill="white">ticket_comments</text>
+<rect x="21" y="508" width="378" height="22" fill="#FEF9E7"/>
+<rect x="28" y="512" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="40" y="523" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="56" y="523" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  BIGSERIAL</text>
+<rect x="21" y="530" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="534" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="545" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="545" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="21" y="552" width="378" height="22" fill="white"/>
+<text x="32" y="567" font-size="15" font-family="Courier New,monospace" fill="#1A252F">author_id  /  author_type</text>
+<rect x="21" y="574" width="378" height="22" fill="#F8F9FA"/>
+<text x="32" y="589" font-size="15" font-family="Courier New,monospace" fill="#1A252F">content  TEXT NOT NULL</text>
+<rect x="21" y="596" width="378" height="22" fill="white"/>
+<text x="32" y="611" font-size="15" font-family="Courier New,monospace" fill="#1A252F">is_internal  /  created_at</text>
+
+<!-- ticket_attachments -->
+<rect x="420" y="476" width="380" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="420" y="476" width="380" height="32" fill="#D35400" rx="4"/>
+<rect x="420" y="496" width="380" height="12" fill="#D35400"/>
+<text x="610" y="497" text-anchor="middle" font-size="17" font-weight="bold" fill="white">ticket_attachments</text>
+<rect x="421" y="508" width="378" height="22" fill="#FEF9E7"/>
+<rect x="428" y="512" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="440" y="523" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="456" y="523" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  BIGSERIAL</text>
+<rect x="421" y="530" width="378" height="22" fill="#EBF5FB"/>
+<rect x="428" y="534" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="545" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="545" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="421" y="552" width="378" height="22" fill="#EBF5FB"/>
+<rect x="428" y="556" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="567" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="567" font-size="15" font-family="Courier New,monospace" fill="#1A252F">comment_id → ticket_comments</text>
+<rect x="421" y="574" width="378" height="22" fill="#F8F9FA"/>
+<text x="432" y="589" font-size="15" font-family="Courier New,monospace" fill="#1A252F">filename  /  mime_type</text>
+<rect x="421" y="596" width="378" height="22" fill="#FDEDEC"/>
+<rect x="428" y="600" width="24" height="14" fill="#CB4335" rx="2"/>
+<text x="440" y="611" text-anchor="middle" font-size="10" font-weight="bold" fill="white">UQ</text>
+<text x="456" y="611" font-size="15" font-family="Courier New,monospace" fill="#1A252F">s3_key  TEXT</text>
+
+<!-- ticket_assignments -->
+<rect x="820" y="476" width="380" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="820" y="476" width="380" height="32" fill="#D35400" rx="4"/>
+<rect x="820" y="496" width="380" height="12" fill="#D35400"/>
+<text x="1010" y="497" text-anchor="middle" font-size="17" font-weight="bold" fill="white">ticket_assignments</text>
+<rect x="821" y="508" width="378" height="22" fill="#FEF9E7"/>
+<rect x="828" y="512" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="840" y="523" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="856" y="523" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  SERIAL</text>
+<rect x="821" y="530" width="378" height="22" fill="#EBF5FB"/>
+<rect x="828" y="534" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="545" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="545" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="821" y="552" width="378" height="22" fill="#EBF5FB"/>
+<rect x="828" y="556" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="567" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="567" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_id → technician_data</text>
+<rect x="821" y="574" width="378" height="22" fill="#F8F9FA"/>
+<text x="832" y="589" font-size="15" font-family="Courier New,monospace" fill="#1A252F">assigned_at  /  assignment_status</text>
+<rect x="821" y="596" width="378" height="22" fill="white"/>
+<text x="832" y="611" font-size="15" font-family="Courier New,monospace" fill="#1A252F">skill_match_score  INT</text>
+
+<!-- ticket_feedback -->
+<rect x="1220" y="476" width="440" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1220" y="476" width="440" height="32" fill="#D35400" rx="4"/>
+<rect x="1220" y="496" width="440" height="12" fill="#D35400"/>
+<text x="1440" y="497" text-anchor="middle" font-size="17" font-weight="bold" fill="white">ticket_feedback</text>
+<rect x="1221" y="508" width="438" height="22" fill="#FEF9E7"/>
+<rect x="1228" y="512" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="1240" y="523" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="1256" y="523" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  BIGSERIAL</text>
+<rect x="1221" y="530" width="438" height="22" fill="#EBF5FB"/>
+<rect x="1228" y="534" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="1240" y="545" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="1256" y="545" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="1221" y="552" width="438" height="22" fill="white"/>
+<text x="1232" y="567" font-size="15" font-family="Courier New,monospace" fill="#1A252F">rating  SMALLINT  (1–5)</text>
+<rect x="1221" y="574" width="438" height="22" fill="#F8F9FA"/>
+<text x="1232" y="589" font-size="15" font-family="Courier New,monospace" fill="#1A252F">classification_correct  /  resolution_helpful</text>
+<rect x="1221" y="596" width="438" height="22" fill="white"/>
+<text x="1232" y="611" font-size="15" font-family="Courier New,monospace" fill="#1A252F">notes  TEXT  /  created_at  TSTZ</text>
+
+<!-- chat_sessions -->
+<rect x="20" y="642" width="380" height="122" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="20" y="642" width="380" height="32" fill="#1E8449" rx="4"/>
+<rect x="20" y="662" width="380" height="12" fill="#1E8449"/>
+<text x="210" y="663" text-anchor="middle" font-size="17" font-weight="bold" fill="white">chat_sessions</text>
+<rect x="21" y="674" width="378" height="22" fill="#FEF9E7"/>
+<rect x="28" y="678" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="40" y="689" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="56" y="689" font-size="15" font-family="Courier New,monospace" fill="#1A252F">session_id  UUID</text>
+<rect x="21" y="696" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="700" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="711" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="711" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_id → user_data</text>
+<rect x="21" y="718" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="722" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="733" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="733" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="21" y="740" width="378" height="22" fill="#F8F9FA"/>
+<text x="32" y="755" font-size="15" font-family="Courier New,monospace" fill="#1A252F">chat_type  (bot / direct)</text>
+
+<!-- chat_messages -->
+<rect x="420" y="642" width="380" height="122" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="420" y="642" width="380" height="32" fill="#1E8449" rx="4"/>
+<rect x="420" y="662" width="380" height="12" fill="#1E8449"/>
+<text x="610" y="663" text-anchor="middle" font-size="17" font-weight="bold" fill="white">chat_messages</text>
+<rect x="421" y="674" width="378" height="22" fill="#FEF9E7"/>
+<rect x="428" y="678" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="440" y="689" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="456" y="689" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  BIGSERIAL</text>
+<rect x="421" y="696" width="378" height="22" fill="#EBF5FB"/>
+<rect x="428" y="700" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="711" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="711" font-size="15" font-family="Courier New,monospace" fill="#1A252F">session_id → chat_sessions</text>
+<rect x="421" y="718" width="378" height="22" fill="white"/>
+<text x="432" y="733" font-size="15" font-family="Courier New,monospace" fill="#1A252F">role  (user / assistant / system)</text>
+<rect x="421" y="740" width="378" height="22" fill="#F8F9FA"/>
+<text x="432" y="755" font-size="15" font-family="Courier New,monospace" fill="#1A252F">content  TEXT</text>
+
+<!-- agent_sessions -->
+<rect x="820" y="642" width="460" height="188" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="820" y="642" width="460" height="32" fill="#7D3C98" rx="4"/>
+<rect x="820" y="662" width="460" height="12" fill="#7D3C98"/>
+<text x="1050" y="663" text-anchor="middle" font-size="17" font-weight="bold" fill="white">agent_sessions</text>
+<rect x="821" y="674" width="458" height="22" fill="#FEF9E7"/>
+<rect x="828" y="678" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="840" y="689" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="856" y="689" font-size="15" font-family="Courier New,monospace" fill="#1A252F">session_id  UUID</text>
+<rect x="821" y="696" width="458" height="22" fill="#EBF5FB"/>
+<rect x="828" y="700" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="711" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="711" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="821" y="718" width="458" height="22" fill="#EBF5FB"/>
+<rect x="828" y="722" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="733" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="733" font-size="15" font-family="Courier New,monospace" fill="#1A252F">device_id → devices</text>
+<rect x="821" y="740" width="458" height="22" fill="#EBF5FB"/>
+<rect x="828" y="744" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="755" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="755" font-size="15" font-family="Courier New,monospace" fill="#1A252F">oversight_tech_id → technician_data</text>
+<rect x="821" y="762" width="458" height="22" fill="#EBF5FB"/>
+<rect x="828" y="766" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="777" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="777" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_id → user_data</text>
+<rect x="821" y="784" width="458" height="22" fill="#F8F9FA"/>
+<text x="832" y="799" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  /  step_count  INT</text>
+<rect x="821" y="806" width="458" height="22" fill="white"/>
+<text x="832" y="821" font-size="15" font-family="Courier New,monospace" fill="#1A252F">escalation_reason  /  completed_at</text>
+
+<!-- session_steps -->
+<rect x="1300" y="642" width="480" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1300" y="642" width="480" height="32" fill="#7D3C98" rx="4"/>
+<rect x="1300" y="662" width="480" height="12" fill="#7D3C98"/>
+<text x="1540" y="663" text-anchor="middle" font-size="17" font-weight="bold" fill="white">session_steps</text>
+<rect x="1301" y="674" width="478" height="22" fill="#FEF9E7"/>
+<rect x="1308" y="678" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="1320" y="689" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="1336" y="689" font-size="15" font-family="Courier New,monospace" fill="#1A252F">step_id  UUID</text>
+<rect x="1301" y="696" width="478" height="22" fill="#EBF5FB"/>
+<rect x="1308" y="700" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="1320" y="711" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="1336" y="711" font-size="15" font-family="Courier New,monospace" fill="#1A252F">session_id → agent_sessions</text>
+<rect x="1301" y="718" width="478" height="22" fill="white"/>
+<text x="1312" y="733" font-size="15" font-family="Courier New,monospace" fill="#1A252F">step_type  (reasoning/command/result)</text>
+<rect x="1301" y="740" width="478" height="22" fill="#F8F9FA"/>
+<text x="1312" y="755" font-size="15" font-family="Courier New,monospace" fill="#1A252F">llm_reasoning  TEXT</text>
+<rect x="1301" y="762" width="478" height="22" fill="white"/>
+<text x="1312" y="777" font-size="15" font-family="Courier New,monospace" fill="#1A252F">command_name  /  command_output</text>
+
+<!-- agent_tasks -->
+<rect x="20" y="852" width="380" height="122" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="20" y="852" width="380" height="32" fill="#7D3C98" rx="4"/>
+<rect x="20" y="872" width="380" height="12" fill="#7D3C98"/>
+<text x="210" y="873" text-anchor="middle" font-size="17" font-weight="bold" fill="white">agent_tasks</text>
+<rect x="21" y="884" width="378" height="22" fill="#FEF9E7"/>
+<rect x="28" y="888" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="40" y="899" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="56" y="899" font-size="15" font-family="Courier New,monospace" fill="#1A252F">task_id  UUID</text>
+<rect x="21" y="906" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="910" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="921" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="921" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number → new_tickets</text>
+<rect x="21" y="928" width="378" height="22" fill="#EBF5FB"/>
+<rect x="28" y="932" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="40" y="943" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="56" y="943" font-size="15" font-family="Courier New,monospace" fill="#1A252F">device_id → devices</text>
+<rect x="21" y="950" width="378" height="22" fill="#F8F9FA"/>
+<text x="32" y="965" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  /  created_at</text>
+
+<!-- daily_reports -->
+<rect x="420" y="852" width="380" height="122" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="420" y="852" width="380" height="32" fill="#7D3C98" rx="4"/>
+<rect x="420" y="872" width="380" height="12" fill="#7D3C98"/>
+<text x="610" y="873" text-anchor="middle" font-size="17" font-weight="bold" fill="white">daily_reports</text>
+<rect x="421" y="884" width="378" height="22" fill="#FEF9E7"/>
+<rect x="428" y="888" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="440" y="899" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="456" y="899" font-size="15" font-family="Courier New,monospace" fill="#1A252F">report_id  UUID</text>
+<rect x="421" y="906" width="378" height="22" fill="#EBF5FB"/>
+<rect x="428" y="910" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="921" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="921" font-size="15" font-family="Courier New,monospace" fill="#1A252F">device_id → devices</text>
+<rect x="421" y="928" width="378" height="22" fill="#EBF5FB"/>
+<rect x="428" y="932" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="440" y="943" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="456" y="943" font-size="15" font-family="Courier New,monospace" fill="#1A252F">user_id → user_data</text>
+<rect x="421" y="950" width="378" height="22" fill="#F8F9FA"/>
+<text x="432" y="965" font-size="15" font-family="Courier New,monospace" fill="#1A252F">report_date  /  llm_summary  TEXT</text>
+
+<!-- technician_attendance -->
+<rect x="820" y="852" width="440" height="122" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="820" y="852" width="440" height="32" fill="#616A6B" rx="4"/>
+<rect x="820" y="872" width="440" height="12" fill="#616A6B"/>
+<text x="1040" y="873" text-anchor="middle" font-size="17" font-weight="bold" fill="white">technician_attendance</text>
+<rect x="821" y="884" width="438" height="22" fill="#FEF9E7"/>
+<rect x="828" y="888" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="840" y="899" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="856" y="899" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  SERIAL</text>
+<rect x="821" y="906" width="438" height="22" fill="#EBF5FB"/>
+<rect x="828" y="910" width="24" height="14" fill="#2471A3" rx="2"/>
+<text x="840" y="921" text-anchor="middle" font-size="10" font-weight="bold" fill="white">FK</text>
+<text x="856" y="921" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tech_id → technician_data</text>
+<rect x="821" y="928" width="438" height="22" fill="white"/>
+<text x="832" y="943" font-size="15" font-family="Courier New,monospace" fill="#1A252F">date  /  punch_in  /  punch_out</text>
+<rect x="821" y="950" width="438" height="22" fill="#F8F9FA"/>
+<text x="832" y="965" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  (available/wfh/on_leave/...)</text>
+
+<!-- llm_traces -->
+<rect x="1280" y="852" width="500" height="144" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1280" y="852" width="500" height="32" fill="#616A6B" rx="4"/>
+<rect x="1280" y="872" width="500" height="12" fill="#616A6B"/>
+<text x="1530" y="873" text-anchor="middle" font-size="17" font-weight="bold" fill="white">llm_traces</text>
+<rect x="1281" y="884" width="498" height="22" fill="#FEF9E7"/>
+<rect x="1288" y="888" width="24" height="14" fill="#C9A227" rx="2"/>
+<text x="1300" y="899" text-anchor="middle" font-size="10" font-weight="bold" fill="white">PK</text>
+<text x="1316" y="899" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  BIGSERIAL</text>
+<rect x="1281" y="906" width="498" height="22" fill="#F8F9FA"/>
+<text x="1292" y="921" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticket_number  TEXT  (loose)</text>
+<rect x="1281" y="928" width="498" height="22" fill="white"/>
+<text x="1292" y="943" font-size="15" font-family="Courier New,monospace" fill="#1A252F">node_name  /  model  TEXT</text>
+<rect x="1281" y="950" width="498" height="22" fill="#F8F9FA"/>
+<text x="1292" y="965" font-size="15" font-family="Courier New,monospace" fill="#1A252F">tokens_used  /  latency_ms</text>
+<rect x="1281" y="972" width="498" height="22" fill="white"/>
+<text x="1292" y="987" font-size="15" font-family="Courier New,monospace" fill="#1A252F">created_at  TSTZ</text>
+
+<!-- historical_tickets -->
+<rect x="20" y="1018" width="580" height="100" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="20" y="1018" width="580" height="32" fill="#616A6B" rx="4"/>
+<rect x="20" y="1038" width="580" height="12" fill="#616A6B"/>
+<text x="310" y="1039" text-anchor="middle" font-size="17" font-weight="bold" fill="white">historical_tickets</text>
+<rect x="21" y="1050" width="578" height="22" fill="white"/>
+<text x="32" y="1065" font-size="15" font-family="Courier New,monospace" fill="#1A252F">id  /  title  /  description</text>
+<rect x="21" y="1072" width="578" height="22" fill="#F8F9FA"/>
+<text x="32" y="1087" font-size="15" font-family="Courier New,monospace" fill="#1A252F">issue_type  /  resolution</text>
+<rect x="21" y="1094" width="578" height="22" fill="white"/>
+<text x="32" y="1109" font-size="15" font-family="Courier New,monospace" fill="#1A252F">73K+ rows — semantic search / RAG context</text>
+
+<!-- closed_tickets -->
+<rect x="620" y="1018" width="440" height="100" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="620" y="1018" width="440" height="32" fill="#616A6B" rx="4"/>
+<rect x="620" y="1038" width="440" height="12" fill="#616A6B"/>
+<text x="840" y="1039" text-anchor="middle" font-size="17" font-weight="bold" fill="white">closed_tickets</text>
+<rect x="621" y="1050" width="438" height="22" fill="white"/>
+<text x="632" y="1065" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticketnumber  /  title</text>
+<rect x="621" y="1072" width="438" height="22" fill="#F8F9FA"/>
+<text x="632" y="1087" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  =  Closed</text>
+<rect x="621" y="1094" width="438" height="22" fill="white"/>
+<text x="632" y="1109" font-size="15" font-family="Courier New,monospace" fill="#1A252F">resolved_at  TSTZ</text>
+
+<!-- resolved_tickets -->
+<rect x="1080" y="1018" width="440" height="100" rx="4" fill="white" stroke="#D0D3D4" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="1080" y="1018" width="440" height="32" fill="#616A6B" rx="4"/>
+<rect x="1080" y="1038" width="440" height="12" fill="#616A6B"/>
+<text x="1300" y="1039" text-anchor="middle" font-size="17" font-weight="bold" fill="white">resolved_tickets</text>
+<rect x="1081" y="1050" width="438" height="22" fill="white"/>
+<text x="1092" y="1065" font-size="15" font-family="Courier New,monospace" fill="#1A252F">ticketnumber  /  title</text>
+<rect x="1081" y="1072" width="438" height="22" fill="#F8F9FA"/>
+<text x="1092" y="1087" font-size="15" font-family="Courier New,monospace" fill="#1A252F">status  =  Resolved</text>
+<rect x="1081" y="1094" width="438" height="22" fill="white"/>
+<text x="1092" y="1109" font-size="15" font-family="Courier New,monospace" fill="#1A252F">resolution  TEXT  /  resolution_date</text>
+</svg>

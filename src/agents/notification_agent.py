@@ -453,6 +453,67 @@ class NotificationAgent:
 
         return sent
 
+    def send_escalation_notification(
+        self,
+        tech_id: str,
+        tech_name: str,
+        tech_mail: str,
+        ticket_number: str,
+        title: str,
+        escalation_reason: str,
+        session_id: str,
+        step_count: int = 0,
+    ) -> bool:
+        """
+        Notify the assigned technician that the AI agent has escalated the ticket.
+        Called when finish(resolved=False) is triggered in the remediation graph.
+        """
+        if not tech_mail:
+            log.warning("No tech email for escalation notification on %s", ticket_number)
+            return False
+
+        steps_url = f"{PORTAL_URL}/tech/sessions/{session_id}"
+        ticket_url = f"{PORTAL_URL}/tech/tickets/{ticket_number}"
+
+        body = _wrap_html(
+            title=f"[Action Required] Ticket {ticket_number} escalated by AI Agent",
+            preheader=f"The AI agent could not resolve ticket {ticket_number} and needs your help.",
+            body_html=f"""
+              <h2 style="margin:0 0 8px;font-size:20px;color:#dc2626;">
+                ⚠ AI Agent Escalated a Ticket to You
+              </h2>
+              <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.7;">
+                Hello <strong>{tech_name}</strong>,<br><br>
+                The AI agent worked on ticket <strong>{ticket_number}</strong> for
+                <strong>{step_count} steps</strong> but was unable to resolve it autonomously.
+                The ticket has been escalated to you and requires your attention.
+              </p>
+              {_ticket_meta_table(ticket_number, title, "", "", "Escalated")}
+              <div style="margin-top:20px;padding:16px 20px;background:#fef2f2;
+                          border:1px solid #fecaca;border-radius:8px;">
+                <p style="margin:0;font-size:13px;font-weight:700;color:#991b1b;">
+                  Why the agent escalated:
+                </p>
+                <p style="margin:8px 0 0;font-size:13px;color:#7f1d1d;line-height:1.6;">
+                  {escalation_reason or "The agent could not resolve this issue autonomously."}
+                </p>
+              </div>
+              <p style="margin:20px 0 8px;font-size:13px;color:#475569;">
+                Review the complete session trace — every command the agent ran, its reasoning,
+                and all diagnostic output — before taking action:
+              </p>
+              {_cta_button("View Agent Session Trace", steps_url)}
+              {_cta_button("Open Ticket", ticket_url)}
+            """,
+        )
+        return self._send({
+            "to":           tech_mail,
+            "subject":      f"[Action Required] AI Agent escalated ticket {ticket_number}",
+            "body":         body,
+            "is_html":      True,
+            "ticket_number": ticket_number,
+        })
+
     def _send(self, payload: Dict) -> bool:
         if sqs_queue.send_notification(payload):
             return True

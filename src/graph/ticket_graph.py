@@ -54,16 +54,11 @@ _AGENT_CONFIDENCE_THRESHOLD = 0.65
 
 
 def _route_after_decision(state: TicketState) -> str:
-    device_id  = state.get("device_id", "")
-    confidence = state.get("auto_resolve_confidence", 0.0)
     if (
         state.get("can_auto_resolve")
-        and confidence >= _AGENT_CONFIDENCE_THRESHOLD
-        and device_id
+        and state.get("auto_resolve_confidence", 0.0) >= _AGENT_CONFIDENCE_THRESHOLD
     ):
-        from routes.agent_routes import is_agent_connected
-        if is_agent_connected(device_id):
-            return "agent_task"
+        return "agent_task"
     return "assign_tech"
 
 

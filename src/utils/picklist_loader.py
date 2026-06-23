@@ -219,24 +219,20 @@ class PicklistLoader:
         return list(self.picklist_data.keys())
     
     def format_for_prompt(self, field: str) -> str:
-        """
-        Format picklist options for LLM prompt
-        
-        Args:
-            field: Field name
-        
-        Returns:
-            Formatted string with value: label pairs
-        """
+        """Format picklist options for LLM prompt — returns label-only list so the
+        model knows to reply with the exact label text (not the numeric code)."""
         field = field.lower()
         if field not in self.picklist_data:
             return f"{field.upper()}: No options available"
-        
-        options = []
-        for value, label in sorted(self.picklist_data[field].items(), key=lambda x: int(x[0]) if x[0].lstrip('-').isdigit() else 0):
-            options.append(f'"{value}": "{label}"')
-        
-        return f"{field.upper()}: {{{', '.join(options)}}}"
+
+        labels = [
+            label
+            for _value, label in sorted(
+                self.picklist_data[field].items(),
+                key=lambda x: int(x[0]) if x[0].lstrip("-").isdigit() else 0,
+            )
+        ]
+        return f"{field.upper()}: {' | '.join(labels)}"
 
 
 # Global instance (lazy loaded)

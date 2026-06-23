@@ -84,3 +84,6 @@ dataset_creation/processed/*.jsonl
 context/cleaned_ticket_data_enhanced.xlsx
 *.parquet
 *.xlsx
+
+# KB raw fetch data — large generated file, not source code
+scripts/kb_raw_articles.json

@@ -56,7 +56,7 @@ class AddMemberRequest(BaseModel):
 def list_users(_: dict = Depends(require_admin)):
     db = DatabaseConnection()
     rows = db.execute_query(
-        "SELECT user_id, user_name, user_mail, no_tickets_raised, available FROM user_data ORDER BY user_id"
+        "SELECT user_id, user_name, user_mail, no_tickets_raised, available, org_id FROM user_data ORDER BY user_id"
     )
     return {"users": rows or []}
 
@@ -107,7 +107,7 @@ def list_technicians(_: dict = Depends(require_admin)):
     db = DatabaseConnection()
     rows = db.execute_query(
         "SELECT tech_id, tech_name, tech_mail, skills, status, is_admin, "
-        "no_tickets_assigned, solved_tickets, current_workload FROM technician_data ORDER BY tech_id"
+        "no_tickets_assigned, solved_tickets, current_workload, org_id, tech_role FROM technician_data ORDER BY tech_id"
     )
     return {"technicians": rows or []}
 
@@ -211,3 +211,36 @@ def add_member_to_org(org_id: str, req: AddMemberRequest, _: dict = Depends(requ
         raise HTTPException(status_code=400, detail="member_type must be 'user' or 'tech'")
 
     return {"message": f"{req.member_type} {req.member_id} added to organization {org_id}"}
+
+
+@router.delete("/organizations/{org_id}/members/{member_type}/{member_id}", status_code=200)
+def remove_member_from_org(org_id: str, member_type: str, member_id: str, _: dict = Depends(require_admin)):
+    """Remove a user or technician from an organization (sets their org_id to NULL)."""
+    db = DatabaseConnection()
+    if member_type == "user":
+        db.execute_query(
+            "UPDATE user_data SET org_id=NULL WHERE user_id=%s AND org_id=%s",
+            (member_id, org_id), fetch=False,
+        )
+    elif member_type == "tech":
+        db.execute_query(
+            "UPDATE technician_data SET org_id=NULL WHERE tech_id=%s AND org_id=%s",
+            (member_id, org_id), fetch=False,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="member_type must be 'user' or 'tech'")
+    return {"message": f"{member_type} {member_id} removed from organization {org_id}"}
+
+
+@router.delete("/organizations/{org_id}", status_code=200)
+def delete_organization(org_id: str, _: dict = Depends(require_admin)):
+    """Delete an organization and unset org_id for all its members."""
+    db = DatabaseConnection()
+    org = db.execute_query("SELECT org_id FROM organizations WHERE org_id=%s LIMIT 1", (org_id,))
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    # Unlink all members first
+    db.execute_query("UPDATE user_data SET org_id=NULL WHERE org_id=%s", (org_id,), fetch=False)
+    db.execute_query("UPDATE technician_data SET org_id=NULL WHERE org_id=%s", (org_id,), fetch=False)
+    db.execute_query("DELETE FROM organizations WHERE org_id=%s", (org_id,), fetch=False)
+    return {"message": f"Organization {org_id} deleted"}

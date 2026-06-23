@@ -93,7 +93,7 @@ def get_dashboard_stats(payload: dict = Depends(optional_user)):
             COUNT(*) FILTER (WHERE status='Pending Agent') AS pending_agent_count,
             COUNT(*) FILTER (WHERE status='Resolved')      AS resolved_count,
             COUNT(*) FILTER (WHERE createdate >= NOW() - INTERVAL '24 hours') AS created_today
-        FROM new_tickets
+        FROM new_tickets WHERE ticketnumber LIKE 'TKT-%'
     """)
     ticket_stats = rows[0] if rows else {}
 
@@ -134,13 +134,19 @@ def get_dashboard_stats(payload: dict = Depends(optional_user)):
                 COUNT(*) FILTER (WHERE status='In Progress') AS my_in_progress,
                 COUNT(*) FILTER (WHERE status='Resolved'
                     AND resolveddatetime >= NOW() - INTERVAL '24 hours') AS my_resolved_today
-            FROM new_tickets WHERE assigned_tech_id=%s
+            FROM new_tickets WHERE ticketnumber LIKE 'TKT-%%' AND assigned_tech_id=%s
         """, (tech_id,))
         my_stats = my_rows[0] if my_rows else {}
+        # Also fetch the DB-side workload counter for comparison
+        wl_rows = db.execute_query(
+            "SELECT current_workload FROM technician_data WHERE tech_id=%s LIMIT 1", (tech_id,)
+        )
+        db_workload = int((wl_rows[0].get("current_workload") or 0) if wl_rows else 0)
         result["my_tickets"] = {
-            "open":          int(my_stats.get("my_open") or 0),
-            "in_progress":   int(my_stats.get("my_in_progress") or 0),
+            "open":           int(my_stats.get("my_open") or 0),
+            "in_progress":    int(my_stats.get("my_in_progress") or 0),
             "resolved_today": int(my_stats.get("my_resolved_today") or 0),
+            "workload_column": db_workload,
         }
 
     return result
