@@ -1060,7 +1060,7 @@ async def run_remediation_session(
             assigned_tech_id=assigned_tech_id,
             user_id=user_id,
             auto_resolved=resolved,
-            agent_dispatched=True,
+            agent_dispatched=False,  # completion email: show resolution or technician info, not "AI dispatched"
         )
 
         # Escalation: tech handoff email with session trace link

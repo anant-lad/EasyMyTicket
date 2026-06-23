@@ -172,7 +172,7 @@ def _cta_button(label: str, url: str, color: str = "#2563eb") -> str:
 #  NotificationAgent
 # ─────────────────────────────────────────────────────────────────────────────
 
-PORTAL_URL = "https://easymyticket.vercel.app"
+PORTAL_URL = "https://easymyticket-frontend.vercel.app"
 
 
 class NotificationAgent:
@@ -411,6 +411,22 @@ class NotificationAgent:
                                     tech_name_for_user = _tr[0].get("tech_name", "A technician")
                             except Exception:
                                 pass
+                        tech_email_for_user = ""
+                        if assigned_tech_id:
+                            try:
+                                _ter = db.execute_query(
+                                    "SELECT tech_mail FROM technician_data WHERE tech_id=%s LIMIT 1",
+                                    (assigned_tech_id,),
+                                )
+                                if _ter:
+                                    tech_email_for_user = _ter[0].get("tech_mail", "")
+                            except Exception:
+                                pass
+                        tech_contact_line = (
+                            f'<br><strong>Email:</strong> <a href="mailto:{tech_email_for_user}" '
+                            f'style="color:#1d4ed8;">{tech_email_for_user}</a>'
+                            if tech_email_for_user else ""
+                        )
                         status_block = f"""
                           <div style="margin-top:20px;padding:16px 20px;background:#eff6ff;
                                       border:1px solid #bfdbfe;border-radius:8px;">
@@ -419,7 +435,7 @@ class NotificationAgent:
                             </p>
                             <p style="margin:6px 0 0;font-size:13px;color:#1e40af;line-height:1.6;">
                               <strong>{tech_name_for_user}</strong> has been assigned to your ticket
-                              and will reach out shortly.
+                              and will reach out shortly.{tech_contact_line}
                             </p>
                           </div>"""
 
