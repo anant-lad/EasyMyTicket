@@ -244,3 +244,32 @@ def delete_organization(org_id: str, _: dict = Depends(require_admin)):
     db.execute_query("UPDATE technician_data SET org_id=NULL WHERE org_id=%s", (org_id,), fetch=False)
     db.execute_query("DELETE FROM organizations WHERE org_id=%s", (org_id,), fetch=False)
     return {"message": f"Organization {org_id} deleted"}
+
+
+# ── Knowledge Base ─────────────────────────────────────────────────────────────
+
+@router.post("/kb/update", tags=["admin"])
+def update_knowledge_base(_: dict = Depends(require_admin)):
+    """Seed the KB from resolved/closed tickets so future agent sessions benefit from past resolutions."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        db = DatabaseConnection()
+        seeded = db.seed_from_resolved_tickets(limit=500)
+        log.info("Admin KB update: seeded %d articles from resolved tickets", seeded)
+        return {"success": True, "articles_seeded": seeded}
+    except Exception as e:
+        log.error("KB update failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"KB update failed: {e}")
+
+
+@router.get("/kb/stats", tags=["admin"])
+def kb_stats(_: dict = Depends(require_admin)):
+    """Return row counts for the knowledge base by category."""
+    db = DatabaseConnection()
+    rows = db.execute_query(
+        "SELECT category, COUNT(*) AS cnt FROM linux_troubleshooting_kb GROUP BY category ORDER BY cnt DESC"
+    )
+    total_rows = db.execute_query("SELECT COUNT(*) AS total FROM linux_troubleshooting_kb")
+    total = int(total_rows[0]["total"]) if total_rows else 0
+    return {"total": total, "by_category": rows or []}

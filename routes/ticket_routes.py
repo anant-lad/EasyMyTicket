@@ -276,15 +276,38 @@ async def get_all_tickets(
             order_direction=order_direction
         )
         
-        # Convert datetime objects to strings for JSON serialization
+        # Fetch tech names for all assigned_tech_ids in one query
+        tech_ids = list({t.get("assigned_tech_id") for t in (result["tickets"] or []) if t.get("assigned_tech_id")})
+        tech_name_map: dict = {}
+        if tech_ids:
+            placeholders = ",".join(["%s"] * len(tech_ids))
+            trows = db_conn.execute_query(
+                f"SELECT tech_id, tech_name FROM technician_data WHERE tech_id IN ({placeholders})",
+                tuple(tech_ids),
+            )
+            if trows:
+                tech_name_map = {r["tech_id"]: r["tech_name"] for r in trows}
+
+        pl = get_picklist_loader()
+        _label_fields = ["issuetype", "subissuetype", "ticketcategory", "tickettype", "priority", "status"]
+
         tickets = []
         for ticket in result['tickets']:
             ticket_dict = dict(ticket)
             for key, value in ticket_dict.items():
                 if isinstance(value, datetime):
                     ticket_dict[key] = value.isoformat()
+            # Enrich with human-readable labels
+            for field in _label_fields:
+                if ticket_dict.get(field):
+                    lbl = pl.get_label(field, str(ticket_dict[field]))
+                    if lbl:
+                        ticket_dict[f"{field}_label"] = lbl
+            # Enrich with technician name
+            if ticket_dict.get("assigned_tech_id"):
+                ticket_dict["assigned_tech_name"] = tech_name_map.get(ticket_dict["assigned_tech_id"])
             tickets.append(ticket_dict)
-        
+
         return TicketsListResponse(
             success=True,
             tickets=tickets,
@@ -792,7 +815,7 @@ def _get_my_tickets_impl(status_filter, limit, payload):
 
         rows = db.execute_query(base, tuple(params)) or []
         pl = get_picklist_loader()
-        label_fields = ["issuetype", "ticketcategory", "tickettype", "priority", "status"]
+        label_fields = ["issuetype", "subissuetype", "ticketcategory", "tickettype", "priority", "status"]
         tickets = []
         for r in rows:
             t = _serialize_row(dict(r))
