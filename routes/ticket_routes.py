@@ -735,6 +735,13 @@ def submit_feedback(ticket_number: str, req: FeedbackRequest):
         fetch=False,
     )
 
+    # Mark feedback as submitted on the ticket so the UI doesn't re-prompt
+    db.execute_query(
+        "UPDATE new_tickets SET feedback_submitted = TRUE WHERE ticketnumber = %s",
+        (ticket_number,),
+        fetch=False,
+    )
+
     # If classification was wrong, log for model improvement tracking
     if req.classification_correct is False and req.actual_issue_type:
         import logging
