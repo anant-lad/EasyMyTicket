@@ -16,11 +16,12 @@ import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response, RedirectResponse
 from pydantic import BaseModel
 
 from src.auth.dependencies import get_current_user
@@ -941,3 +942,45 @@ def _update_device_last_seen(device_id: str, device_info: dict):
         )
     except Exception as e:
         log.warning("Failed to upsert device %s: %s", device_id, e)
+
+
+# ── Installer download endpoints ──────────────────────────────────────────────
+
+_INSTALLER_DIR = Path(__file__).parent.parent / "agent" / "installer"
+
+_INSTALLERS = {
+    "linux":   ("install-linux.sh",   "text/x-sh",         "easymyticket-install-linux.sh"),
+    "macos":   ("install-macos.sh",   "text/x-sh",         "easymyticket-install-macos.sh"),
+    "windows": ("install-windows.ps1","text/plain",        "easymyticket-install-windows.ps1"),
+}
+
+
+@router.get("/api/agent/installer/windows-exe", tags=["agent"])
+def download_windows_exe():
+    """Redirect to latest Windows EXE from GitHub Releases."""
+    return RedirectResponse(
+        "https://github.com/anant-lad/EasyMyTicket/releases/latest/download/easymyticket-agent.exe",
+        status_code=302,
+    )
+
+
+@router.get("/api/agent/installer/{platform}", tags=["agent"])
+def download_installer(platform: str):
+    """
+    Serve the desktop agent installer script for the given platform.
+    No auth required — the script is public; security comes from the --api-key flag.
+    Platforms: linux, macos, windows
+    """
+    entry = _INSTALLERS.get(platform.lower())
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Unknown platform '{platform}'. Use: linux, macos, windows")
+    filename, media_type, download_name = entry
+    path = _INSTALLER_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Installer not found on server: {filename}")
+    return FileResponse(
+        path=str(path),
+        media_type=media_type,
+        filename=download_name,
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )

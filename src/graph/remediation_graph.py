@@ -828,10 +828,14 @@ async def run_remediation_session(
 
         messages.append(response)
 
-        # No tool calls → LLM finished without calling finish()
+        # No tool calls → LLM responded without calling finish() — treat as incomplete
         if not getattr(response, "tool_calls", None):
-            explanation = response.content or "Issue investigated — no further actions taken."
-            resolved    = True
+            explanation = response.content or "Session ended without explicit resolution."
+            resolved    = False
+            escalation  = (
+                "Agent loop ended without calling finish(). "
+                "Last LLM response: " + (explanation[:300] if explanation else "(empty)")
+            )
             _save_step(db, session_id, step_count, "reasoning",
                        llm_reasoning=explanation)
             break

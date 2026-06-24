@@ -856,7 +856,8 @@ def update_ticket_status(
     """Technician updates ticket status."""
     db = get_db_connection()
     rows = db.execute_query(
-        "SELECT ticketnumber, assigned_tech_id, status FROM new_tickets WHERE ticketnumber=%s",
+        "SELECT ticketnumber, assigned_tech_id, status, user_id, title, priority, issuetype"
+        " FROM new_tickets WHERE ticketnumber=%s",
         (ticket_number,),
     )
     if not rows:
@@ -906,6 +907,23 @@ def update_ticket_status(
         (ticket_number, tech_id, f"Status changed to {req.status}"),
         fetch=False,
     )
+
+    # Notify ticket owner about the status change
+    if ticket.get("user_id"):
+        try:
+            tech_name = payload.get("name", "")
+            from src.agents.notification_agent import NotificationAgent
+            NotificationAgent().send_status_update_notification(
+                ticket_number=ticket_number,
+                title=ticket.get("title", ""),
+                new_status=req.status,
+                priority=str(ticket.get("priority") or ""),
+                category=str(ticket.get("issuetype") or ""),
+                user_id=ticket["user_id"],
+                tech_name=tech_name,
+            )
+        except Exception as e:
+            log.warning("Status update notification failed for %s: %s", ticket_number, e)
 
     return {"success": True, "message": f"Status updated to {req.status}"}
 
@@ -975,11 +993,11 @@ def reassign_ticket(
     # Adjust workloads
     if old_tech_id:
         db.execute_query(
-            "UPDATE technician_data SET no_tickets_inprogress=GREATEST(0,no_tickets_inprogress-1) WHERE tech_id=%s",
+            "UPDATE technician_data SET no_tickets_assigned=GREATEST(0,no_tickets_assigned-1) WHERE tech_id=%s",
             (old_tech_id,), fetch=False,
         )
     db.execute_query(
-        "UPDATE technician_data SET no_tickets_inprogress=no_tickets_inprogress+1 WHERE tech_id=%s",
+        "UPDATE technician_data SET no_tickets_assigned=no_tickets_assigned+1 WHERE tech_id=%s",
         (req.new_tech_id,), fetch=False,
     )
 
@@ -1069,7 +1087,34 @@ def get_comments(
         if isinstance(c.get("created_at"), datetime):
             c["created_at"] = c["created_at"].isoformat()
         comments.append(c)
-    return {"ticket_number": ticket_number, "comments": comments}
+
+    # Fetch ticket attachments and generate fresh presigned URLs so chat can render download links
+    attachments = []
+    try:
+        import boto3
+        s3 = boto3.client("s3", region_name="ap-south-1")
+        att_rows = db.execute_query(
+            "SELECT filename, s3_key, file_size, mime_type, created_at"
+            " FROM ticket_attachments WHERE ticket_number=%s ORDER BY created_at ASC",
+            (ticket_number,),
+        ) or []
+        for r in att_rows:
+            a = dict(r)
+            if isinstance(a.get("created_at"), datetime):
+                a["created_at"] = a["created_at"].isoformat()
+            try:
+                a["url"] = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": _S3_BUCKET, "Key": r["s3_key"]},
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                a["url"] = None
+            attachments.append(a)
+    except Exception as e:
+        log.warning("Could not fetch attachments for %s: %s", ticket_number, e)
+
+    return {"ticket_number": ticket_number, "comments": comments, "attachments": attachments}
 
 
 @router.post("/tickets/{ticket_number}/comments", tags=["tickets"])

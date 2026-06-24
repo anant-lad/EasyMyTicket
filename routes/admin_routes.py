@@ -1,4 +1,5 @@
 import re
+import uuid
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Optional, List
@@ -6,6 +7,10 @@ from typing import Optional, List
 from src.auth.dependencies import require_admin
 from src.auth.password import hash_password
 from src.database.db_connection import DatabaseConnection
+
+
+def _gen_api_key() -> str:
+    return "emt_" + uuid.uuid4().hex
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -68,13 +73,34 @@ def create_user(req: CreateUserRequest, _: dict = Depends(require_admin)):
                                 (req.user_id, req.user_mail))
     if existing:
         raise HTTPException(status_code=409, detail="User ID or email already exists")
+    api_key = _gen_api_key()
     db.execute_query(
-        "INSERT INTO user_data (user_id, user_name, user_mail, user_password, no_tickets_raised, available) "
-        "VALUES (%s,%s,%s,%s,0,TRUE)",
-        (req.user_id, req.user_name, req.user_mail, hash_password(req.password)),
+        "INSERT INTO user_data (user_id, user_name, user_mail, user_password, no_tickets_raised, available, agent_api_key) "
+        "VALUES (%s,%s,%s,%s,0,TRUE,%s)",
+        (req.user_id, req.user_name, req.user_mail, hash_password(req.password), api_key),
         fetch=False,
     )
-    return {"message": "User created", "user_id": req.user_id}
+    return {"message": "User created", "user_id": req.user_id, "agent_api_key": api_key}
+
+
+@router.get("/users/{user_id}/agent-key")
+def get_user_agent_key(user_id: str, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    rows = db.execute_query("SELECT agent_api_key FROM user_data WHERE user_id=%s LIMIT 1", (user_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user_id": user_id, "agent_api_key": rows[0]["agent_api_key"]}
+
+
+@router.post("/users/{user_id}/regenerate-agent-key")
+def regenerate_user_agent_key(user_id: str, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    rows = db.execute_query("SELECT user_id FROM user_data WHERE user_id=%s LIMIT 1", (user_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_key = _gen_api_key()
+    db.execute_query("UPDATE user_data SET agent_api_key=%s WHERE user_id=%s", (new_key, user_id), fetch=False)
+    return {"user_id": user_id, "agent_api_key": new_key}
 
 
 @router.put("/users/{user_id}")
@@ -119,14 +145,35 @@ def create_technician(req: CreateTechRequest, _: dict = Depends(require_admin)):
                                 (req.tech_id, req.tech_mail))
     if existing:
         raise HTTPException(status_code=409, detail="Tech ID or email already exists")
+    api_key = _gen_api_key()
     db.execute_query(
         "INSERT INTO technician_data (tech_id, tech_name, tech_mail, tech_password, skills, status, is_admin, tech_role, org_id,"
-        "no_tickets_assigned, solved_tickets, current_workload) VALUES (%s,%s,%s,%s,%s,'available',%s,%s,%s,0,0,0)",
+        "no_tickets_assigned, solved_tickets, current_workload, agent_api_key) VALUES (%s,%s,%s,%s,%s,'available',%s,%s,%s,0,0,0,%s)",
         (req.tech_id, req.tech_name, req.tech_mail, hash_password(req.password),
-         req.skills, req.is_admin, req.tech_role or "tech", req.org_id),
+         req.skills, req.is_admin, req.tech_role or "tech", req.org_id, api_key),
         fetch=False,
     )
-    return {"message": "Technician created", "tech_id": req.tech_id}
+    return {"message": "Technician created", "tech_id": req.tech_id, "agent_api_key": api_key}
+
+
+@router.get("/technicians/{tech_id}/agent-key")
+def get_tech_agent_key(tech_id: str, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    rows = db.execute_query("SELECT agent_api_key FROM technician_data WHERE tech_id=%s LIMIT 1", (tech_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return {"tech_id": tech_id, "agent_api_key": rows[0]["agent_api_key"]}
+
+
+@router.post("/technicians/{tech_id}/regenerate-agent-key")
+def regenerate_tech_agent_key(tech_id: str, _: dict = Depends(require_admin)):
+    db = DatabaseConnection()
+    rows = db.execute_query("SELECT tech_id FROM technician_data WHERE tech_id=%s LIMIT 1", (tech_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    new_key = _gen_api_key()
+    db.execute_query("UPDATE technician_data SET agent_api_key=%s WHERE tech_id=%s", (new_key, tech_id), fetch=False)
+    return {"tech_id": tech_id, "agent_api_key": new_key}
 
 
 @router.put("/technicians/{tech_id}")
@@ -244,6 +291,85 @@ def delete_organization(org_id: str, _: dict = Depends(require_admin)):
     db.execute_query("UPDATE technician_data SET org_id=NULL WHERE org_id=%s", (org_id,), fetch=False)
     db.execute_query("DELETE FROM organizations WHERE org_id=%s", (org_id,), fetch=False)
     return {"message": f"Organization {org_id} deleted"}
+
+
+# ── Technician Profile (admin view) ───────────────────────────────────────────
+
+@router.get("/technicians/{tech_id}/profile", tags=["admin"])
+def get_technician_profile(tech_id: str, _: dict = Depends(require_admin)):
+    """Return a technician's full profile: info, assigned tickets, attendance history, comments."""
+    db = DatabaseConnection()
+
+    tech_rows = db.execute_query(
+        "SELECT tech_id, tech_name, tech_mail, skills, status, is_admin, tech_role, org_id, "
+        "no_tickets_assigned, solved_tickets, current_workload FROM technician_data WHERE tech_id=%s LIMIT 1",
+        (tech_id,),
+    )
+    if not tech_rows:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    tech = dict(tech_rows[0])
+
+    # Assigned tickets (last 100)
+    ticket_rows = db.execute_query(
+        "SELECT ticketnumber, title, status, priority, issuetype, createdate, resolveddatetime "
+        "FROM new_tickets WHERE assigned_tech_id=%s ORDER BY createdate DESC LIMIT 100",
+        (tech_id,),
+    )
+    tickets = []
+    for t in (ticket_rows or []):
+        td = dict(t)
+        for k, v in td.items():
+            if hasattr(v, "isoformat"):
+                td[k] = v.isoformat()
+        tickets.append(td)
+
+    # Attendance — last 60 days
+    att_rows = db.execute_query(
+        "SELECT date, punch_in, punch_out, status, notes FROM technician_attendance "
+        "WHERE tech_id=%s ORDER BY date DESC LIMIT 60",
+        (tech_id,),
+    )
+    attendance = []
+    STATUS_LABEL_MAP = {
+        "present": "Present", "wfh": "WFH", "leave": "Leave",
+        "half_day": "Half Day", "absent": "Absent",
+    }
+    att_summary = {"present": 0, "wfh": 0, "leave": 0, "half_day": 0, "absent": 0}
+    for a in (att_rows or []):
+        ad = dict(a)
+        for k, v in ad.items():
+            if hasattr(v, "isoformat"):
+                ad[k] = v.isoformat()
+        ad["status_label"] = STATUS_LABEL_MAP.get(ad.get("status", ""), ad.get("status", ""))
+        attendance.append(ad)
+        s = ad.get("status")
+        if s in att_summary:
+            att_summary[s] += 1
+
+    # Recent comments by this technician (last 50)
+    comment_rows = db.execute_query(
+        "SELECT tc.id, tc.ticket_number, tc.content, tc.is_internal, tc.created_at, nt.title AS ticket_title "
+        "FROM ticket_comments tc "
+        "LEFT JOIN new_tickets nt ON nt.ticketnumber = tc.ticket_number "
+        "WHERE tc.author_id=%s AND tc.author_type='tech' "
+        "ORDER BY tc.created_at DESC LIMIT 50",
+        (tech_id,),
+    )
+    comments = []
+    for c in (comment_rows or []):
+        cd = dict(c)
+        for k, v in cd.items():
+            if hasattr(v, "isoformat"):
+                cd[k] = v.isoformat()
+        comments.append(cd)
+
+    return {
+        "tech": tech,
+        "tickets": tickets,
+        "attendance": attendance,
+        "attendance_summary": att_summary,
+        "comments": comments,
+    }
 
 
 # ── Knowledge Base ─────────────────────────────────────────────────────────────

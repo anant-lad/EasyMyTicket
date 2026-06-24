@@ -57,7 +57,10 @@ def handle_notification(payload: dict):
 
 def main():
     from src.utils import queue as sqs_queue
+    from workers.email_poller_worker import start_email_poller_thread
+
     log.info("Notification worker starting — polling SQS queue")
+    start_email_poller_thread()
     _touch_heartbeat()   # write initial heartbeat so probe doesn't fail before first poll
 
     while _running:

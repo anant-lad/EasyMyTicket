@@ -175,6 +175,27 @@ _MIGRATIONS = [
         "title || ' ' || COALESCE(symptoms,'') || ' ' || COALESCE(fix_steps,'')))"
     ),
     "CREATE INDEX IF NOT EXISTS idx_kb_category ON linux_troubleshooting_kb(category)",
+
+    # E17: cross-pod tool call relay (PostgreSQL message queue for 2-replica WebSocket dispatch)
+    (
+        "CREATE TABLE IF NOT EXISTS pending_tool_calls ("
+        "id          SERIAL PRIMARY KEY, "
+        "device_id   TEXT NOT NULL, "
+        "session_id  TEXT NOT NULL, "
+        "tool_name   TEXT NOT NULL, "
+        "tool_input  JSONB NOT NULL DEFAULT '{}', "
+        "created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    (
+        "CREATE TABLE IF NOT EXISTS tool_call_results ("
+        "id              SERIAL PRIMARY KEY, "
+        "pending_call_id INT NOT NULL REFERENCES pending_tool_calls(id), "
+        "output          TEXT, "
+        "error           TEXT, "
+        "completed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_ptc_device ON pending_tool_calls(device_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tcr_call ON tool_call_results(pending_call_id)",
 ]
 
 

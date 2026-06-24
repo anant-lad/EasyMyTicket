@@ -129,12 +129,17 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
         "ALLOWED VALUES — copy these strings exactly, character for character:\n"
         "{picklist}\n\n"
         "Field guidance:\n"
-        "- issuetype: physical device/peripheral (keyboard/screen/battery/printer/webcam/mouse/trackpad) → Hardware; "
-        "app/OS/driver/software install/crash/update → Software; "
-        "VPN/tunnel/remote access/wifi/ethernet/internet/firewall/DNS/connectivity → Network; "
-        "login/password/permissions/account locked/MFA → Account/Access; "
-        "email/Teams/calendar/Outlook/OneDrive → Email/Collaboration; "
-        "cloud/server/infra/Azure/AWS/database/backup → Cloud/Infrastructure\n"
+        "- issuetype: physical device/peripheral (keyboard/screen/battery/printer/webcam/mouse/trackpad) → Hardware & Equipment; "
+        "app/OS/driver/software install/crash/update → Software & Applications; "
+        "VPN/tunnel/remote access/wifi/ethernet/internet/firewall/DNS/connectivity → Network & Connectivity; "
+        "login/password/permissions/account locked/MFA/Active Directory → Active Directory & Access; "
+        "email/Teams/calendar/Outlook/OneDrive/SharePoint → Cloud & Office 365; "
+        "cloud/server/infra/Azure/AWS/database → Server & Database; "
+        "backup/DR/DATTO/recovery → Backup & Disaster Recovery; "
+        "cybersecurity/virus/malware/intrusion → Cybersecurity; "
+        "reimbursement/billing/payment/invoice/finance/salary/expense/claim/refund → General IT Support; "
+        "HR/policy/approval/procurement/licensing/purchase/vendor → General IT Support; "
+        "general question/other IT matter → General IT Support\n"
         "- subissuetype: pick the single most specific match. Examples: "
         "VPN setup/connect/disconnect → VPN/Remote Access; "
         "wifi not connecting/slow → WiFi; "
@@ -225,13 +230,13 @@ def classify_node(state: TicketState) -> Dict:
         raw = _parse_json(resp.content) or {}
         # Detect OpenRouter/provider error responses
         if "error" in raw and "issuetype" not in raw:
-            log.warning("CLASSIFY:LLM_ERROR ticket=%s error=%s", ticket_number, raw.get("error"))
+            log.warning("CLASSIFY:LLM_ERROR ticket=%s error=%s", state.get("ticket_number"), raw.get("error"))
             raw = {}
         else:
-            log.debug("CLASSIFY:LLM_RAW ticket=%s result=%s", ticket_number, json.dumps(raw)[:300])
+            log.debug("CLASSIFY:LLM_RAW ticket=%s result=%s", state.get("ticket_number"), json.dumps(raw)[:300])
         classification = raw
     except Exception as e:
-        log.warning("CLASSIFY:LLM_FAILED ticket=%s error=%s", ticket_number, e)
+        log.warning("CLASSIFY:LLM_FAILED ticket=%s error=%s", state.get("ticket_number"), e)
         errors.append(f"classification: {e}")
 
     # Derive normalised category + priority
@@ -371,15 +376,21 @@ _ROUTING_PROMPT = ChatPromptTemplate.from_messages([
         "   (even if hardware is also possible), prefer can_agent_solve=true. "
         "   The agent will diagnose first and escalate to human if it hits a dead end.\n"
         "3. Only set can_agent_solve=false when the issue is DEFINITIVELY outside software "
-        "   reach (physical damage, procurement, identity verification, multi-system outages).\n\n"
+        "   reach — see the CANNOT handle list above. When in doubt for financial/HR/approval "
+        "   topics, always set can_agent_solve=false.\n\n"
         "Agent CAN handle: camera/audio/display/Bluetooth/printer not working, "
         "disk full, slow performance, service crashes, driver issues, network connectivity, "
         "software installs/updates, permission errors, startup failures, "
         "missing devices, high CPU/memory — anything where CLI, drivers, or config might help.\n\n"
-        "Agent CANNOT handle: password resets needing identity verification, "
-        "confirmed physical hardware damage (broken screen, liquid damage), "
-        "procurement/licensing decisions, account access needing admin approval, "
-        "multi-machine outages requiring on-site presence.\n\n"
+        "Agent CANNOT handle (set can_agent_solve=false immediately, do not look for workarounds):\n"
+        "- Billing, reimbursement, payment, expense claims, invoices, refunds, salary, finance\n"
+        "- HR matters, leave requests, payroll, policy questions\n"
+        "- Procurement, purchase orders, vendor approvals, licensing decisions\n"
+        "- Password resets requiring identity verification or admin approval\n"
+        "- Confirmed physical hardware damage (broken screen, liquid damage, theft)\n"
+        "- Multi-machine outages or on-site physical work\n"
+        "- Any request where the resolution requires a human decision, financial approval, "
+        "or action outside the user's machine\n\n"
         "Return:\n"
         "{{\n"
         '  "can_agent_solve": true or false,\n'
@@ -756,7 +767,7 @@ def notify_node(state: TicketState) -> Dict:
             resolution=state.get("resolution", ""),
             assigned_tech_id=state.get("assigned_tech_id"),
             user_id=state.get("user_id"),
-            auto_resolved=state.get("can_auto_resolve", False),
+            auto_resolved=False,  # ticket not resolved yet — just created and routed
             agent_dispatched=state.get("agent_connected", False),
         )
         if result:

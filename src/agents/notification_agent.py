@@ -530,6 +530,72 @@ class NotificationAgent:
             "ticket_number": ticket_number,
         })
 
+    def send_status_update_notification(
+        self,
+        ticket_number: str,
+        title: str,
+        new_status: str,
+        priority: str,
+        category: str,
+        user_id: str,
+        tech_name: str = "",
+        tech_note: str = "",
+    ) -> bool:
+        """Notify the ticket owner when a technician changes the ticket status."""
+        from src.database.db_connection import DatabaseConnection
+        db = DatabaseConnection()
+        try:
+            rows = db.execute_query(
+                "SELECT user_mail AS email, user_name AS full_name FROM user_data WHERE user_id=%s LIMIT 1",
+                (user_id,),
+            )
+            if not rows or not rows[0].get("email"):
+                return False
+            email     = rows[0]["email"]
+            full_name = rows[0].get("full_name", "there")
+        except Exception as e:
+            log.warning("send_status_update_notification: could not fetch user %s: %s", user_id, e)
+            return False
+
+        tech_line = f"Updated by: <strong>{tech_name}</strong><br>" if tech_name else ""
+        note_block = ""
+        if tech_note:
+            note_block = f"""
+              <div style="margin-top:16px;padding:14px 16px;background:#f8fafc;
+                          border-left:3px solid #94a3b8;border-radius:0 6px 6px 0;">
+                <p style="margin:0;font-size:13px;color:#475569;line-height:1.6;">
+                  <strong>Note:</strong> {tech_note}
+                </p>
+              </div>"""
+
+        body = _wrap_html(
+            title=f"Ticket {ticket_number} — Status Update",
+            preheader=f"Your ticket {ticket_number} status has been updated to {new_status}.",
+            body_html=f"""
+              <h2 style="margin:0 0 8px;font-size:20px;color:#0f172a;">Ticket Status Updated</h2>
+              <p style="margin:0 0 24px;font-size:14px;color:#475569;">
+                Hello <strong>{full_name}</strong>,<br><br>
+                The status of your support ticket has been updated.
+              </p>
+              {_ticket_meta_table(ticket_number, title, priority.capitalize() if priority else "", category, new_status)}
+              <div style="margin-top:20px;padding:16px 20px;background:#eff6ff;
+                          border:1px solid #bfdbfe;border-radius:8px;">
+                <p style="margin:0;font-size:13px;color:#1d4ed8;line-height:1.6;">
+                  {tech_line}New Status: {_status_badge(new_status)}
+                </p>
+              </div>
+              {note_block}
+              {_cta_button("Track Your Ticket", f"{PORTAL_URL}/portal/tickets/{ticket_number}")}
+            """,
+        )
+        return self._send({
+            "to":      email,
+            "subject": f"[EasyMyTicket] Ticket {ticket_number} Status → {new_status}",
+            "body":    body,
+            "is_html": True,
+            "ticket_number": ticket_number,
+        })
+
     def _send(self, payload: Dict) -> bool:
         if sqs_queue.send_notification(payload):
             return True

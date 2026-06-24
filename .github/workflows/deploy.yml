@@ -163,6 +163,32 @@ jobs:
           kubectl apply -f k8s/configmap.yaml
           kubectl apply -f k8s/serviceaccount.yaml
 
+      - name: Sync per-file Python configmaps from source
+        run: |
+          _cm() {
+            local name=$1 file=$2
+            kubectl create configmap "$name" --from-file="$file" -n ticketing \
+              --dry-run=client -o yaml | kubectl apply -f -
+          }
+          _cm main-py-patch             main.py
+          _cm admin-routes-py           routes/admin_routes.py
+          _cm agent-routes-py           routes/agent_routes.py
+          _cm ticket-routes-py          routes/ticket_routes.py
+          _cm chat-routes-py            routes/chat_routes.py
+          _cm auth-middleware-py        src/middleware/auth.py
+          _cm nodes-py                  src/graph/nodes.py
+          _cm ticket-graph-py           src/graph/ticket_graph.py
+          _cm chat-graph-py             src/graph/chat_graph.py
+          _cm remediation-graph-py      src/graph/remediation_graph.py
+          _cm notification-agent-py     src/agents/notification_agent.py
+          _cm smart-assignment-py       src/agents/smart_ticket_assignment.py
+          _cm migrations-py             src/database/migrations.py
+          _cm picklist-loader-py        src/utils/picklist_loader.py
+          _cm provider-py               src/llm/provider.py
+          _cm logger-py                 src/utils/logger.py
+          _cm executor-py               agent/executor.py
+          _cm windows-installer-ps1     agent/installer/install-windows.ps1
+
       - name: Sync ticketing-secrets from GitHub secrets
         run: |
           kubectl create secret generic ticketing-secrets \

@@ -73,7 +73,7 @@ def _build_context(db: DatabaseConnection, ticket_number: Optional[str],
                 f"Description: {(t.get('description') or '')[:500]}\n"
                 f"Resolution: {(t.get('resolution') or 'Not yet resolved')[:500]}"
             )
-        # Include last agentic session if any
+        # Include last agentic session + steps so AI can explain what was done
         sessions = db.execute_query(
             """SELECT session_id, status, step_count, resolution, escalation_reason
                FROM agent_sessions WHERE ticket_number=%s ORDER BY created_at DESC LIMIT 1""",
@@ -82,9 +82,28 @@ def _build_context(db: DatabaseConnection, ticket_number: Optional[str],
         if sessions:
             s = sessions[0]
             lines.append(
-                f"\nLast agentic session: {s['status']} ({s.get('step_count',0)} steps)\n"
-                f"Session resolution: {(s.get('resolution') or '')[:300]}"
+                f"\nAI Agent Session: {s['status']} ({s.get('step_count',0)} steps)\n"
+                f"Resolution: {(s.get('resolution') or 'Not yet resolved')[:500]}"
             )
+            # Include the actual steps so the AI can explain what was run
+            steps = db.execute_query(
+                """SELECT step_type, command, args, output, llm_reasoning, exit_code, step_type_detail
+                   FROM session_steps WHERE session_id=%s ORDER BY step_number LIMIT 20""",
+                (s["session_id"],),
+            )
+            if steps:
+                lines.append("\nAgent actions taken:")
+                for st in steps:
+                    stype = st.get("step_type", "")
+                    if stype == "reasoning":
+                        lines.append(f"  • Reasoning: {(st.get('llm_reasoning') or '')[:200]}")
+                    elif stype in ("tool_call", "command", "tool_result"):
+                        cmd = st.get("command", "") or st.get("step_type_detail", "")
+                        out = (st.get("output") or "")[:300]
+                        exit_c = st.get("exit_code")
+                        lines.append(f"  • Ran [{cmd}] (exit {exit_c}): {out}")
+                    elif stype == "resolution":
+                        lines.append(f"  • Concluded: {(st.get('llm_reasoning') or '')[:300]}")
     else:
         # No ticket — give recent user tickets for context
         recent = db.execute_query(
