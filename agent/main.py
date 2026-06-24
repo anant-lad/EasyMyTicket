@@ -89,7 +89,7 @@ MONITOR_USER_ID = os.getenv("AGENT_MONITOR_USER_ID", "agent_monitor")
 RECONNECT_DELAY = int(os.getenv("AGENT_RECONNECT_DELAY", "10"))
 AUTO_MODE       = os.getenv("AGENT_AUTO_MODE", "0") == "1"  # full system access when enabled
 
-WS_URL = f"{API_URL.rstrip('/')}/ws/agent/{DEVICE_ID}"
+WS_URL = f"{API_URL.rstrip('/')}/ws/agent/{DEVICE_ID}" + (f"?key={API_KEY}" if API_KEY else "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
