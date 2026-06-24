@@ -2481,9 +2481,15 @@ Write-Host "    NSSM ready."
 $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingSvc) {
     Write-Host "    Removing existing service..."
-    & $NssmExe stop $ServiceName 2>$null | Out-Null
+    # Suppress non-zero exit from nssm stop when service is already stopped
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    & $NssmExe stop $ServiceName *>&1 | Out-Null
+    $global:LASTEXITCODE = 0
     Start-Sleep -Seconds 2
-    & $NssmExe remove $ServiceName confirm 2>$null | Out-Null
+    & $NssmExe remove $ServiceName confirm *>&1 | Out-Null
+    $global:LASTEXITCODE = 0
+    $ErrorActionPreference = $prev
     Start-Sleep -Seconds 1
 }
 
