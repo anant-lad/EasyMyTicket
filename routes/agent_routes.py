@@ -148,6 +148,15 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                     except Exception:
                         break  # connection gone — fall through to finally block
                     _agent_last_ping[device_id] = now
+                    # Refresh DB last_seen so cross-pod is_agent_connected check stays valid
+                    try:
+                        db = DatabaseConnection()
+                        db.execute_query(
+                            "UPDATE devices SET last_seen=NOW() WHERE device_id=%s",
+                            (device_id,), fetch=False,
+                        )
+                    except Exception:
+                        pass
                 continue
             except WebSocketDisconnect:
                 break
@@ -393,7 +402,7 @@ def is_agent_connected(device_id: str) -> bool:
         db = DatabaseConnection()
         rows = db.execute_query(
             "SELECT device_id FROM devices WHERE device_id=%s "
-            "AND last_seen > NOW() - INTERVAL '90 seconds'",
+            "AND last_seen > NOW() - INTERVAL '120 seconds'",
             (device_id,),
         )
         return bool(rows)
@@ -415,7 +424,7 @@ def get_connected_device_for_user(user_id: str) -> str | None:
         db = DatabaseConnection()
         rows = db.execute_query(
             "SELECT device_id FROM devices WHERE user_id=%s "
-            "AND last_seen > NOW() - INTERVAL '90 seconds' LIMIT 1",
+            "AND last_seen > NOW() - INTERVAL '120 seconds' LIMIT 1",
             (user_id,),
         )
         return rows[0]["device_id"] if rows else None
