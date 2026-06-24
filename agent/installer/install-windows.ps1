@@ -2494,36 +2494,45 @@ if ($existingSvc) {
 }
 
 # -- Register Windows Service via NSSM
+# Disable strict-mode error propagation for all NSSM native-command calls.
+# Set-StrictMode -Version Latest treats failed native commands in pipelines
+# as terminating errors that leave subsequent variables uninitialized.
 Write-Host "==> Registering Windows Service: $ServiceName..."
-& $NssmExe install $ServiceName $VenvPython $AgentScript | Out-Null
-& $NssmExe set $ServiceName DisplayName "EasyMyTicket Desktop Agent" | Out-Null
-& $NssmExe set $ServiceName Description "EasyMyTicket AI-powered IT support agent — persistent connection to support portal, runs automated diagnostics and fixes." | Out-Null
-& $NssmExe set $ServiceName Start SERVICE_AUTO_START | Out-Null
-& $NssmExe set $ServiceName AppRestartDelay 5000 | Out-Null
-& $NssmExe set $ServiceName AppStdout "$CacheDir\agent.log" | Out-Null
-& $NssmExe set $ServiceName AppStderr "$CacheDir\agent.err" | Out-Null
-& $NssmExe set $ServiceName AppRotateFiles 1 | Out-Null
-& $NssmExe set $ServiceName AppRotateBytes 5242880 | Out-Null
+$savedEAP = $ErrorActionPreference
+$ErrorActionPreference = 'SilentlyContinue'
 
-# Set per-service environment variables via NSSM (one call per var is reliable)
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_API_URL=$ApiUrl" | Out-Null
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_API_KEY=$ApiKey" | Out-Null
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_USER_ID=$UserId" | Out-Null
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_DEVICE_ID=$DeviceId" | Out-Null
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_CACHE_DIR=$CacheDir" | Out-Null
-& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_AUTO_MODE=$AutoModeVal" | Out-Null
+& $NssmExe install $ServiceName $VenvPython $AgentScript *>&1 | Out-Null
+& $NssmExe set $ServiceName DisplayName "EasyMyTicket Desktop Agent" *>&1 | Out-Null
+& $NssmExe set $ServiceName Description "EasyMyTicket AI-powered IT support agent" *>&1 | Out-Null
+& $NssmExe set $ServiceName Start SERVICE_AUTO_START *>&1 | Out-Null
+& $NssmExe set $ServiceName AppRestartDelay 5000 *>&1 | Out-Null
+& $NssmExe set $ServiceName AppStdout "$CacheDir\agent.log" *>&1 | Out-Null
+& $NssmExe set $ServiceName AppStderr "$CacheDir\agent.err" *>&1 | Out-Null
+& $NssmExe set $ServiceName AppRotateFiles 1 *>&1 | Out-Null
+& $NssmExe set $ServiceName AppRotateBytes 5242880 *>&1 | Out-Null
 
+# AppEnvironmentExtra: pass all vars in one call (multiple calls overwrite each other)
+& $NssmExe set $ServiceName AppEnvironmentExtra `
+    "AGENT_API_URL=$ApiUrl" `
+    "AGENT_API_KEY=$ApiKey" `
+    "AGENT_USER_ID=$UserId" `
+    "AGENT_DEVICE_ID=$DeviceId" `
+    "AGENT_CACHE_DIR=$CacheDir" `
+    "AGENT_AUTO_MODE=$AutoModeVal" *>&1 | Out-Null
+
+$global:LASTEXITCODE = 0
 Write-Host "    Service registered."
 
 # -- Start the service
 Write-Host "==> Starting $ServiceName..."
-$prev = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
 & $NssmExe start $ServiceName *>&1 | Out-Null
 $global:LASTEXITCODE = 0
-$ErrorActionPreference = $prev
+$ErrorActionPreference = $savedEAP
+
 Start-Sleep -Seconds 3
+[object]$svc = $null
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-$svcStatus = if ($null -ne $svc) { "$($svc.Status)" } else { "Not found" }
+$svcStatus = if ($null -ne $svc) { [string]$svc.Status } else { "Not found" }
 Write-Host "    Service status: $svcStatus"
 
 # -- Register Scheduled Task: daily health scan at 06:00
