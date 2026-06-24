@@ -49,6 +49,10 @@ _user_to_device: Dict[str, str] = {}
 # {device_id: dict} — device metadata from the register message (os, hostname, etc.)
 _agent_device_metadata: Dict[str, dict] = {}
 
+# {device_id: float} — monotonic time of last ping sent (for ALB keepalive)
+_agent_last_ping: Dict[str, float] = {}
+_PING_INTERVAL = 30.0  # seconds — well under ALB's 60s idle timeout
+
 
 def is_agent_auto_mode(device_id: str) -> bool:
     """Return True if the connected agent for this device has auto mode enabled."""
@@ -131,6 +135,15 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                 # WebSocket receive loop stays unblocked (avoiding the deadlock
                 # where _send_tool_to_ws awaits a Future that only this loop can resolve)
                 asyncio.create_task(_dispatch_pending_calls_for_device(device_id, ws))
+                # Keepalive ping — prevents AWS ALB from dropping the connection
+                # after its 60s idle timeout when no tool calls are in flight
+                now = asyncio.get_event_loop().time()
+                if now - _agent_last_ping.get(device_id, 0) >= _PING_INTERVAL:
+                    try:
+                        await ws.send_text(json.dumps({"type": "ping"}))
+                    except Exception:
+                        break  # connection gone — fall through to finally block
+                    _agent_last_ping[device_id] = now
                 continue
             except WebSocketDisconnect:
                 break
@@ -191,6 +204,7 @@ async def agent_websocket(device_id: str, ws: WebSocket):
     finally:
         _connected_agents.pop(device_id, None)
         _agent_auto_mode.pop(device_id, None)
+        _agent_last_ping.pop(device_id, None)
         if authenticated_user_id:
             _user_to_device.pop(authenticated_user_id, None)
         # Mark the device as offline in DB so the cross-pod fallback returns None
