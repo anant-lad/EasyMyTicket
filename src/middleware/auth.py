@@ -14,7 +14,7 @@ SKIP_PATHS = {
     "/api/health", "/healthz", "/readyz", "/", "/docs", "/redoc", "/openapi.json",
     "/api/auth/login",
 }
-SKIP_PREFIXES = ("/docs", "/openapi", "/ws/")
+SKIP_PREFIXES = ("/docs", "/openapi", "/ws/", "/api/agent/installer")
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
