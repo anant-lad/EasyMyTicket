@@ -2505,22 +2505,25 @@ Write-Host "==> Registering Windows Service: $ServiceName..."
 & $NssmExe set $ServiceName AppRotateFiles 1 | Out-Null
 & $NssmExe set $ServiceName AppRotateBytes 5242880 | Out-Null
 
-# Set per-service environment variables via NSSM
-& $NssmExe set $ServiceName AppEnvironmentExtra `
-    "AGENT_API_URL=$ApiUrl" `
-    "AGENT_API_KEY=$ApiKey" `
-    "AGENT_USER_ID=$UserId" `
-    "AGENT_DEVICE_ID=$DeviceId" `
-    "AGENT_CACHE_DIR=$CacheDir" `
-    "AGENT_AUTO_MODE=$AutoModeVal" | Out-Null
+# Set per-service environment variables via NSSM (one call per var is reliable)
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_API_URL=$ApiUrl" | Out-Null
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_API_KEY=$ApiKey" | Out-Null
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_USER_ID=$UserId" | Out-Null
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_DEVICE_ID=$DeviceId" | Out-Null
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_CACHE_DIR=$CacheDir" | Out-Null
+& $NssmExe set $ServiceName AppEnvironmentExtra "AGENT_AUTO_MODE=$AutoModeVal" | Out-Null
 
 Write-Host "    Service registered."
 
 # -- Start the service
 Write-Host "==> Starting $ServiceName..."
-& $NssmExe start $ServiceName | Out-Null
+$prev = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+& $NssmExe start $ServiceName *>&1 | Out-Null
+$global:LASTEXITCODE = 0
+$ErrorActionPreference = $prev
 Start-Sleep -Seconds 3
-$svcStatus = (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue).Status
+$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$svcStatus = if ($null -ne $svc) { "$($svc.Status)" } else { "Not found" }
 Write-Host "    Service status: $svcStatus"
 
 # -- Register Scheduled Task: daily health scan at 06:00
