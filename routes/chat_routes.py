@@ -66,8 +66,12 @@ def get_history(session_id: str):
 def list_sessions(user_id: str):
     db   = DatabaseConnection()
     rows = db.execute_query(
-        "SELECT session_id, ticket_number, created_at, last_message "
-        "FROM chat_sessions WHERE user_id=%s ORDER BY last_message DESC NULLS LAST LIMIT 20",
+        """SELECT cs.session_id, cs.ticket_number, cs.created_at, cs.last_message,
+                  t.title AS ticket_title,
+                  (SELECT COUNT(*) FROM chat_messages WHERE session_id = cs.session_id) AS message_count
+           FROM chat_sessions cs
+           LEFT JOIN new_tickets t ON t.ticketnumber = cs.ticket_number
+           WHERE cs.user_id=%s ORDER BY cs.last_message DESC NULLS LAST LIMIT 50""",
         (user_id,),
     )
     return {"sessions": rows or []}
