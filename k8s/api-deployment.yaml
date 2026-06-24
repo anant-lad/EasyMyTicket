@@ -61,3 +61,131 @@ spec:
             preStop:
               exec:
                 command: ["/bin/sh", "-c", "sleep 5"]
+          volumeMounts:
+            - name: main-py
+              mountPath: /app/main.py
+              subPath: main.py
+            - name: admin-routes
+              mountPath: /app/routes/admin_routes.py
+              subPath: admin_routes.py
+            - name: agent-routes
+              mountPath: /app/routes/agent_routes.py
+              subPath: agent_routes.py
+            - name: ticket-routes
+              mountPath: /app/routes/ticket_routes.py
+              subPath: ticket_routes.py
+            - name: chat-routes
+              mountPath: /app/routes/chat_routes.py
+              subPath: chat_routes.py
+            - name: auth-middleware
+              mountPath: /app/src/middleware/auth.py
+              subPath: auth.py
+            - name: nodes
+              mountPath: /app/src/graph/nodes.py
+              subPath: nodes.py
+            - name: ticket-graph
+              mountPath: /app/src/graph/ticket_graph.py
+              subPath: ticket_graph.py
+            - name: chat-graph
+              mountPath: /app/src/graph/chat_graph.py
+              subPath: chat_graph.py
+            - name: remediation-graph
+              mountPath: /app/src/graph/remediation_graph.py
+              subPath: remediation_graph.py
+            - name: notification-agent
+              mountPath: /app/src/agents/notification_agent.py
+              subPath: notification_agent.py
+            - name: smart-assignment
+              mountPath: /app/src/agents/smart_ticket_assignment.py
+              subPath: smart_ticket_assignment.py
+            - name: migrations
+              mountPath: /app/src/database/migrations.py
+              subPath: migrations.py
+            - name: picklist-loader
+              mountPath: /app/src/utils/picklist_loader.py
+              subPath: picklist_loader.py
+            - name: provider
+              mountPath: /app/src/llm/provider.py
+              subPath: provider.py
+            - name: logger
+              mountPath: /app/src/utils/logger.py
+              subPath: logger.py
+            - name: executor
+              mountPath: /app/agent/executor.py
+              subPath: executor.py
+            - name: windows-installer
+              mountPath: /app/agent/installer/install-windows.ps1
+              subPath: install-windows.ps1
+      volumes:
+        - name: main-py
+          configMap:
+            name: main-py-patch
+            items: [{key: main.py, path: main.py}]
+        - name: admin-routes
+          configMap:
+            name: admin-routes-py
+            items: [{key: admin_routes.py, path: admin_routes.py}]
+        - name: agent-routes
+          configMap:
+            name: agent-routes-py
+            items: [{key: agent_routes.py, path: agent_routes.py}]
+        - name: ticket-routes
+          configMap:
+            name: ticket-routes-py
+            items: [{key: ticket_routes.py, path: ticket_routes.py}]
+        - name: chat-routes
+          configMap:
+            name: chat-routes-py
+            items: [{key: chat_routes.py, path: chat_routes.py}]
+        - name: auth-middleware
+          configMap:
+            name: auth-middleware-py
+            items: [{key: auth.py, path: auth.py}]
+        - name: nodes
+          configMap:
+            name: nodes-py
+            items: [{key: nodes.py, path: nodes.py}]
+        - name: ticket-graph
+          configMap:
+            name: ticket-graph-py
+            items: [{key: ticket_graph.py, path: ticket_graph.py}]
+        - name: chat-graph
+          configMap:
+            name: chat-graph-py
+            items: [{key: chat_graph.py, path: chat_graph.py}]
+        - name: remediation-graph
+          configMap:
+            name: remediation-graph-py
+            items: [{key: remediation_graph.py, path: remediation_graph.py}]
+        - name: notification-agent
+          configMap:
+            name: notification-agent-py
+            items: [{key: notification_agent.py, path: notification_agent.py}]
+        - name: smart-assignment
+          configMap:
+            name: smart-assignment-py
+            items: [{key: smart_ticket_assignment.py, path: smart_ticket_assignment.py}]
+        - name: migrations
+          configMap:
+            name: migrations-py
+            items: [{key: migrations.py, path: migrations.py}]
+        - name: picklist-loader
+          configMap:
+            name: picklist-loader-py
+            items: [{key: picklist_loader.py, path: picklist_loader.py}]
+        - name: provider
+          configMap:
+            name: provider-py
+            items: [{key: provider.py, path: provider.py}]
+        - name: logger
+          configMap:
+            name: logger-py
+            items: [{key: logger.py, path: logger.py}]
+        - name: executor
+          configMap:
+            name: executor-py
+            items: [{key: executor.py, path: executor.py}]
+        - name: windows-installer
+          configMap:
+            name: windows-installer-ps1
+            items: [{key: install-windows.ps1, path: install-windows.ps1}]
