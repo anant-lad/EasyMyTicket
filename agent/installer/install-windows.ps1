@@ -2462,51 +2462,59 @@ $AutoModeVal = if ($AutoMode) { "1" } else { "0" }
 [System.Environment]::SetEnvironmentVariable("AGENT_CACHE_DIR", $CacheDir,    "Machine")
 [System.Environment]::SetEnvironmentVariable("AGENT_AUTO_MODE", $AutoModeVal, "Machine")
 
-# -- Register Windows Service (persistent WebSocket connection)
-# Windows Service is preferred over Scheduled Task for persistent connections:
-#   - Starts before user login (SYSTEM account)
-#   - Auto-restarts on crash with configurable backoff (5s, 10s, 30s)
-#   - Proper lifecycle: sc start/stop/query, visible in services.msc
-Write-Host "==> Registering Windows Service: $ServiceName..."
+# -- Download NSSM (Non-Sucking Service Manager)
+# Plain Python scripts cannot be registered as Windows Services directly —
+# Windows SCM requires StartServiceCtrlDispatcher() which Python doesn't call.
+# NSSM wraps any executable as a proper service, handling all SCM protocol.
+Write-Host "==> Downloading NSSM (service wrapper)..."
+$NssmDir = "$CacheDir\nssm"
+$NssmExe = "$NssmDir\nssm-2.24\win64\nssm.exe"
+if (-not (Test-Path $NssmExe)) {
+    $NssmZip = "$CacheDir\nssm.zip"
+    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $NssmZip -UseBasicParsing
+    Expand-Archive -Path $NssmZip -DestinationPath $NssmDir -Force
+    Remove-Item $NssmZip -Force
+}
+Write-Host "    NSSM ready."
 
+# -- Remove existing service if present
 $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingSvc) {
-    Write-Host "    Stopping existing service..."
-    if ($existingSvc.Status -eq "Running") {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-    }
-    sc.exe delete $ServiceName | Out-Null
+    Write-Host "    Removing existing service..."
+    & $NssmExe stop $ServiceName 2>$null | Out-Null
+    Start-Sleep -Seconds 2
+    & $NssmExe remove $ServiceName confirm 2>$null | Out-Null
     Start-Sleep -Seconds 1
 }
 
-$BinPath = "`"$VenvPython`" `"$AgentScript`""
-sc.exe create $ServiceName `
-    binPath= $BinPath `
-    DisplayName= "EasyMyTicket Desktop Agent" `
-    start= auto `
-    obj= LocalSystem | Out-Null
+# -- Register Windows Service via NSSM
+Write-Host "==> Registering Windows Service: $ServiceName..."
+& $NssmExe install $ServiceName $VenvPython $AgentScript | Out-Null
+& $NssmExe set $ServiceName DisplayName "EasyMyTicket Desktop Agent" | Out-Null
+& $NssmExe set $ServiceName Description "EasyMyTicket AI-powered IT support agent — persistent connection to support portal, runs automated diagnostics and fixes." | Out-Null
+& $NssmExe set $ServiceName Start SERVICE_AUTO_START | Out-Null
+& $NssmExe set $ServiceName AppRestartDelay 5000 | Out-Null
+& $NssmExe set $ServiceName AppStdout "$CacheDir\agent.log" | Out-Null
+& $NssmExe set $ServiceName AppStderr "$CacheDir\agent.err" | Out-Null
+& $NssmExe set $ServiceName AppRotateFiles 1 | Out-Null
+& $NssmExe set $ServiceName AppRotateBytes 5242880 | Out-Null
 
-sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
-sc.exe description $ServiceName "EasyMyTicket AI-powered IT support agent -- maintains a persistent connection to the support portal and runs automated diagnostics and fixes on this device." | Out-Null
+# Set per-service environment variables via NSSM
+& $NssmExe set $ServiceName AppEnvironmentExtra `
+    "AGENT_API_URL=$ApiUrl" `
+    "AGENT_API_KEY=$ApiKey" `
+    "AGENT_USER_ID=$UserId" `
+    "AGENT_DEVICE_ID=$DeviceId" `
+    "AGENT_CACHE_DIR=$CacheDir" `
+    "AGENT_AUTO_MODE=$AutoModeVal" | Out-Null
 
-# Store env vars in service registry key (per-service override)
-$RegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
-Set-ItemProperty -Path $RegPath -Name Environment -Type MultiString -Value @(
-    "AGENT_API_URL=$ApiUrl",
-    "AGENT_API_KEY=$ApiKey",
-    "AGENT_USER_ID=$UserId",
-    "AGENT_DEVICE_ID=$DeviceId",
-    "AGENT_CACHE_DIR=$CacheDir",
-    "AGENT_AUTO_MODE=$AutoModeVal"
-)
 Write-Host "    Service registered."
 
 # -- Start the service
 Write-Host "==> Starting $ServiceName..."
-Start-Service -Name $ServiceName
+& $NssmExe start $ServiceName | Out-Null
 Start-Sleep -Seconds 3
-$svcStatus = (Get-Service -Name $ServiceName).Status
+$svcStatus = (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue).Status
 Write-Host "    Service status: $svcStatus"
 
 # -- Register Scheduled Task: daily health scan at 06:00
@@ -2551,9 +2559,9 @@ Write-Host "  Service     : $ServiceName (status: $svcStatus)"
 Write-Host "  Daily Scan  : 06:00 via Scheduled Task"
 Write-Host ""
 Write-Host "Useful commands:"
-Write-Host "  sc query $ServiceName        # check status"
-Write-Host "  sc stop  $ServiceName        # stop agent"
-Write-Host "  sc start $ServiceName        # start agent"
-Write-Host "  Get-EventLog -LogName Application -Source $ServiceName -Newest 20"
+Write-Host "  $NssmExe status $ServiceName   # check status"
+Write-Host "  $NssmExe stop   $ServiceName   # stop agent"
+Write-Host "  $NssmExe start  $ServiceName   # start agent"
+Write-Host "  Get-Content $CacheDir\agent.log -Tail 50   # view logs"
 Write-Host ""
 Write-Host "The agent is running. Your device will appear in Agent Oversight within 30s."
