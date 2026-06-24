@@ -394,6 +394,14 @@ Rules:
     "OpenVPN has been installed. To connect to a VPN: 1) Obtain a .ovpn config file from your VPN provider.
      2) Run: sudo openvpn --config /path/to/your.ovpn  3) To verify the connection: curl ifconfig.me
      If you need a specific VPN provider configured, please share the .ovpn file with your IT team."
+VPN SETUP / TROUBLESHOOTING:
+- wifi_status shows nearby WiFi access points — NOT VPN connections. Never use it for VPN diagnosis.
+- For "setup" / "install" / "I need a VPN" tickets: install a VPN client using install_package.
+  * "free VPN" / unspecified → install openvpn
+  * "WireGuard" → install wireguard
+  * "Cisco AnyConnect" / corporate → install openconnect
+- After installing: verify with dpkg -l openvpn (or equivalent), then provide usage steps in finish().
+- To check existing VPN connections: use vpn_status or connection_list (never wifi_status).
 - You have {max_steps} total steps — use them wisely
 
 User's machine OS: {os}
@@ -469,6 +477,18 @@ Call finish(resolved=False, escalation_reason="...") RIGHT AWAY if the ticket de
 Example: "laptop screen is broken" → immediately call finish(resolved=False, escalation_reason=
 "Physical hardware damage — broken laptop screen requires on-site technician or hardware replacement. Cannot be resolved remotely.")
 Do NOT web-search, do NOT run any commands — just finish with escalation.
+
+VPN SETUP / TROUBLESHOOTING (read this section for any VPN ticket):
+- wifi_status shows nearby wireless access points — it does NOT show VPN connections. Never use it for VPN diagnosis.
+- To check VPN connections: use vpn_status or connection_list.
+- For "setup" / "install" / "I need a VPN" tickets — the user needs a VPN client installed:
+  * "free VPN" / unspecified → install openvpn (apt-get install -y openvpn)
+  * "WireGuard" → install_package(wireguard)
+  * "Cisco AnyConnect" / corporate → install_package(openconnect)
+- After installing, test with: dpkg -l openvpn (Linux) or which openvpn.
+- The resolution MUST include exact steps the user needs to run to connect to their VPN.
+- For "connect to VPN" tickets (client already installed): use vpn_status to find the connection name,
+  then run_script to execute: nmcli con up id "<NAME>" or sudo openvpn --config /path/to/file.ovpn
 
 RULES:
 - Tier-1 (diagnostic) commands are read-only — run them freely.

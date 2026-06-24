@@ -167,6 +167,24 @@ TIER1: Dict[str, Tuple[List, List, List]] = {
         ["netsh", "wlan", "show", "interfaces"],
     ),
 
+    # VPN / network connections
+    "vpn_status": (
+        ["bash", "-c",
+         "echo '=== Active connections ==='; nmcli con show --active; "
+         "echo '=== VPN connections ==='; nmcli con show | grep -i vpn || echo 'No VPN connections found'; "
+         "echo '=== Tunnel interfaces ==='; ip tunnel show 2>/dev/null || true"],
+        ["bash", "-c", "scutil --nc list; networksetup -listallnetworkservices"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-VpnConnection | Select-Object Name,ConnectionStatus,ServerAddress | ConvertTo-Json -Compress; "
+         "ipconfig | Select-String 'PPP\\|Tunnel'"],
+    ),
+    "connection_list": (
+        ["nmcli", "con", "show"],
+        ["networksetup", "-listallnetworkservices"],
+        ["powershell", "-NoProfile", "-Command",
+         "Get-NetConnectionProfile | Select-Object Name,NetworkCategory,IPv4Connectivity | ConvertTo-Json -Compress"],
+    ),
+
     # Drivers / hardware
     "driver_errors": (
         ["dmesg", "--level=err,crit", "-T"],
