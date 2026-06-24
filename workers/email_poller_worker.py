@@ -2,7 +2,9 @@
 Email-to-ticket poller — runs as a background thread inside the ticket-worker pod.
 
 Polls the Gmail IMAP inbox every 60 s. For each UNSEEN email:
-  - If sender is a registered user → create a new ticket via the LangGraph pipeline.
+  - If sender is a registered user → create a new ticket via the internal API service
+    (http://ticketing-api-svc.ticketing.svc.cluster.local) so the full LangGraph
+    pipeline runs in the API pod exactly as it does for portal-created tickets.
   - If the subject contains a ticket number (Re: [EasyMyTicket] TKT-...) AND the
     sender is the ticket owner → append the email body as a comment instead.
   - Unrecognised senders are skipped (no account = no ticket).
@@ -11,18 +13,26 @@ Polls the Gmail IMAP inbox every 60 s. For each UNSEEN email:
 import email
 import imaplib
 import logging
+import os
 import re
 import threading
 import time
-import uuid
-from datetime import datetime, timezone
 from email.header import decode_header
 from typing import Optional
+
+import httpx  # used in _create_ticket_from_email; pre-import to catch missing dep early
 
 log = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 60  # seconds between IMAP polls
 _TICKET_NUMBER_RE = re.compile(r"TKT-\d{14}-[A-Z0-9]{6}")
+
+# Internal K8s service URL — worker pod calls the API pod so the LangGraph
+# pipeline runs in the proven API environment, not in the worker thread.
+_INTERNAL_API_URL = os.getenv(
+    "INTERNAL_API_URL",
+    "http://ticketing-api-svc.ticketing.svc.cluster.local",
+)
 
 
 def _decode_str(value: str | bytes | None, charset: str | None = None) -> str:
@@ -82,38 +92,43 @@ def _add_comment(db, ticket_number: str, user_id: str, author_name: str, body: s
     log.info("Added email reply as comment on %s from %s", ticket_number, user_id)
 
 
+def _get_api_key() -> str:
+    """Return the first system API key available to this pod."""
+    from src.config import Config
+    keys = Config.get_valid_api_keys()
+    return next(iter(keys), "")
+
+
 def _create_ticket_from_email(user: dict, subject: str, body: str):
-    """Insert ticket row and kick off LangGraph pipeline (mirrors ticket_routes.py logic)."""
-    from src.database.db_connection import DatabaseConnection
-    from src.graph.ticket_graph import process_ticket
+    """Create a ticket by POSTing to the internal API service.
 
+    This delegates pipeline execution to the API pod where the full LangGraph
+    stack is initialised correctly, avoiding threading/import issues in the worker.
+    """
     user_id = user["user_id"]
-    title = subject[:255] or "Email support request"
-    description = body[:8000] or title
+    title = (subject[:255] or "Email support request")
+    description = (body[:8000] or title)
 
-    ticket_number = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
-
-    db = DatabaseConnection()
-    db.execute_query(
-        "INSERT INTO new_tickets (ticketnumber, title, description, user_id, status, createdate, source)"
-        " VALUES (%s,%s,%s,%s,'Open',NOW(),'email') ON CONFLICT (ticketnumber) DO NOTHING",
-        (ticket_number, title, description, user_id),
-        fetch=False,
-    )
-    log.info("Created ticket %s from email by %s", ticket_number, user_id)
+    api_key = _get_api_key()
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     try:
-        process_ticket(
-            title=title,
-            description=description,
-            user_id=user_id,
-            source="email",
-            device_id=None,
-            due_date_time=None,
-            existing_ticket_number=ticket_number,
+        resp = httpx.post(
+            f"{_INTERNAL_API_URL}/api/tickets/create",
+            json={
+                "title": title,
+                "description": description,
+                "user_id": user_id,
+                "source": "email",
+            },
+            headers=headers,
+            timeout=30.0,
         )
+        resp.raise_for_status()
+        ticket_number = resp.json().get("ticket_number", "?")
+        log.info("Created ticket %s from email by %s (via API)", ticket_number, user_id)
     except Exception as exc:
-        log.exception("Pipeline failed for email ticket %s: %s", ticket_number, exc)
+        log.exception("Failed to create ticket from email for user %s: %s", user_id, exc)
 
 
 def _process_email(uid_bytes: bytes, imap: imaplib.IMAP4_SSL):
