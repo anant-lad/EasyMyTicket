@@ -123,7 +123,18 @@ async def agent_websocket(device_id: str, ws: WebSocket):
     log.info("Agent connected: %s user=%s (total=%d)", device_id, authenticated_user_id or "anonymous", len(_connected_agents))
 
     try:
-        async for raw in ws.iter_text():
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                # Idle tick: fire relay dispatch as a background task so the
+                # WebSocket receive loop stays unblocked (avoiding the deadlock
+                # where _send_tool_to_ws awaits a Future that only this loop can resolve)
+                asyncio.create_task(_dispatch_pending_calls_for_device(device_id, ws))
+                continue
+            except WebSocketDisconnect:
+                break
+
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -155,7 +166,6 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                     _save_task_result(task_id, status, output, exit_code)
 
             elif msg_type == "tool_result":
-                # Agentic session step result — resolve the waiting Future
                 call_id = msg.get("call_id")
                 if call_id and call_id in _pending_tool_calls:
                     future = _pending_tool_calls.pop(call_id)
@@ -176,8 +186,6 @@ async def agent_websocket(device_id: str, ws: WebSocket):
             else:
                 log.debug("Unknown message type from agent: %s", msg_type)
 
-    except WebSocketDisconnect:
-        pass
     except Exception as e:
         log.error("Agent WebSocket error (device=%s): %s", device_id, e)
     finally:
@@ -185,6 +193,15 @@ async def agent_websocket(device_id: str, ws: WebSocket):
         _agent_auto_mode.pop(device_id, None)
         if authenticated_user_id:
             _user_to_device.pop(authenticated_user_id, None)
+        # Mark the device as offline in DB so the cross-pod fallback returns None
+        try:
+            db = DatabaseConnection()
+            db.execute_query(
+                "UPDATE devices SET last_seen = NOW() - INTERVAL '10 minutes' WHERE device_id=%s",
+                (device_id,), fetch=False,
+            )
+        except Exception as _e:
+            log.warning("Could not mark device offline in DB: %s", _e)
         log.info("Agent disconnected: %s (remaining=%d)", device_id, len(_connected_agents))
 
 
@@ -192,8 +209,8 @@ async def agent_websocket(device_id: str, ws: WebSocket):
 #  Agentic session — tool call dispatch (called by remediation_graph.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def dispatch_tool_call(
-    device_id:   str,
+async def _send_tool_to_ws(
+    ws:          WebSocket,
     session_id:  str,
     command:     str,
     args:        dict,
@@ -203,15 +220,7 @@ async def dispatch_tool_call(
     script_type: str  = "auto",
     timeout:     int  = 120,
 ) -> dict:
-    """
-    Send a tool_call to the connected agent and await its tool_result.
-
-    Returns the tool_result dict, or raises TimeoutError / RuntimeError.
-    """
-    ws = _connected_agents.get(device_id)
-    if not ws:
-        raise RuntimeError(f"Device {device_id!r} is not connected")
-
+    """Send a tool_call over an open WebSocket and await the tool_result reply."""
     call_id = str(uuid.uuid4())
     loop    = asyncio.get_event_loop()
     future  = loop.create_future()
@@ -242,6 +251,121 @@ async def dispatch_tool_call(
         raise
 
 
+async def _execute_relay_call(ws: WebSocket, row: dict) -> None:
+    """
+    Execute a single relayed tool call (background task, runs concurrently with WebSocket loop).
+    Sends the tool_call to the agent via ws, then writes the result back to tool_call_results
+    so the originating pod (running dispatch_tool_call's polling loop) can pick it up.
+    """
+    pending_call_id = row["id"]
+    db = DatabaseConnection()
+    try:
+        tool_input = row["tool_input"] if isinstance(row["tool_input"], dict) else json.loads(row["tool_input"] or "{}")
+        result = await _send_tool_to_ws(
+            ws=ws,
+            session_id=row["session_id"],
+            command=row["tool_name"],
+            args=tool_input,
+        )
+        db.execute_query(
+            "INSERT INTO tool_call_results (pending_call_id, output) VALUES (%s, %s)",
+            (pending_call_id, json.dumps(result)),
+            fetch=False,
+        )
+        log.debug("relay call completed: pending_call_id=%d", pending_call_id)
+    except Exception as _e:
+        try:
+            db.execute_query(
+                "INSERT INTO tool_call_results (pending_call_id, error) VALUES (%s, %s)",
+                (pending_call_id, str(_e)),
+                fetch=False,
+            )
+        except Exception:
+            pass
+        log.warning("relay call failed: pending_call_id=%d: %s", pending_call_id, _e)
+
+
+async def _dispatch_pending_calls_for_device(device_id: str, ws: WebSocket) -> None:
+    """
+    Picks up tool calls relayed via DB from the other pod and fires each as a background task.
+    Must NOT be awaited directly in the WebSocket loop — use asyncio.create_task() so the
+    loop stays free to receive tool_result messages (which resolve the awaited Futures).
+    """
+    try:
+        db = DatabaseConnection()
+        rows = db.execute_query(
+            "SELECT ptc.id, ptc.session_id, ptc.tool_name, ptc.tool_input"
+            " FROM pending_tool_calls ptc"
+            " WHERE ptc.device_id=%s"
+            "   AND NOT EXISTS (SELECT 1 FROM tool_call_results WHERE pending_call_id=ptc.id)"
+            " ORDER BY ptc.created_at LIMIT 5",
+            (device_id,),
+        )
+    except Exception as _e:
+        log.warning("relay poll error for device %s: %s", device_id, _e)
+        return
+
+    for row in rows:
+        # Each call runs in its own task — doesn't block the WebSocket receive loop
+        asyncio.create_task(_execute_relay_call(ws, row))
+
+
+async def dispatch_tool_call(
+    device_id:   str,
+    session_id:  str,
+    command:     str,
+    args:        dict,
+    allow_tier2: bool = True,
+    auto_mode:   bool = False,
+    script:      str  = None,
+    script_type: str  = "auto",
+    timeout:     int  = 120,
+) -> dict:
+    """
+    Send a tool_call to the connected agent and await its tool_result.
+
+    Fast path: WebSocket is on this pod — dispatch directly.
+    Relay path: WebSocket is on the other pod — write to pending_tool_calls and
+                poll tool_call_results until the other pod's WebSocket loop completes it.
+    """
+    ws = _connected_agents.get(device_id)
+    if ws:
+        return await _send_tool_to_ws(
+            ws, session_id, command, args, allow_tier2, auto_mode, script, script_type, timeout
+        )
+
+    # Cross-pod relay: insert the call and wait for the other pod to process it
+    log.info("dispatch_tool_call relay: device=%s command=%s (not on this pod)", device_id, command)
+    db = DatabaseConnection()
+    tool_input: dict = args or {}
+    if script is not None:
+        tool_input = {**tool_input, "_script": script, "_script_type": script_type}
+
+    rows = db.execute_query(
+        "INSERT INTO pending_tool_calls (device_id, session_id, tool_name, tool_input)"
+        " VALUES (%s, %s, %s, %s) RETURNING id",
+        (device_id, session_id, command, json.dumps(tool_input)),
+    )
+    if not rows:
+        raise RuntimeError(f"Device {device_id!r} is not connected and relay insert failed")
+    call_db_id = rows[0]["id"]
+
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(1)
+        result_rows = db.execute_query(
+            "SELECT output, error FROM tool_call_results WHERE pending_call_id=%s",
+            (call_db_id,),
+        )
+        if result_rows:
+            r = result_rows[0]
+            if r["error"]:
+                raise RuntimeError(r["error"])
+            return json.loads(r["output"])
+
+    raise TimeoutError(f"tool_call relay for device {device_id!r} timed out after {timeout}s")
+
+
 def is_agent_connected(device_id: str) -> bool:
     if device_id in _connected_agents:
         return True
@@ -259,8 +383,25 @@ def is_agent_connected(device_id: str) -> bool:
 
 
 def get_connected_device_for_user(user_id: str) -> str | None:
-    """Return the device_id currently connected for this user, or None."""
-    return _user_to_device.get(user_id)
+    """Return the device_id currently connected for this user, or None.
+
+    Checks in-memory first (fast path). Falls back to the DB devices table
+    so that the other pod in a 2-replica deployment can answer correctly.
+    """
+    # Fast path: this pod owns the WebSocket
+    if user_id in _user_to_device:
+        return _user_to_device[user_id]
+    # Cross-pod fallback: the WebSocket lives on the other pod; use DB heartbeat
+    try:
+        db = DatabaseConnection()
+        rows = db.execute_query(
+            "SELECT device_id FROM devices WHERE user_id=%s "
+            "AND last_seen > NOW() - INTERVAL '90 seconds' LIMIT 1",
+            (user_id,),
+        )
+        return rows[0]["device_id"] if rows else None
+    except Exception:
+        return None
 
 
 def get_device_metadata(device_id: str) -> dict:

@@ -378,13 +378,22 @@ Workflow:
 2. SEARCH   — web_search for the exact error or fix procedure if needed
 3. FIX      — apply the fix directly (no approval needed in auto mode)
 4. VERIFY   — confirm the fix worked with a follow-up check
-5. FINISH   — call finish() with a plain-English explanation
+5. FINISH   — call finish() with a complete user-facing explanation
 
 Rules:
 - Prefer targeted fixes over broad ones (fix one service, not reinstall the OS)
 - Always verify before finishing
 - If 3 fix attempts fail, escalate with a clear explanation
-- Keep finish() explanation in plain English for the user
+- finish() explanation is read by the END USER, not a technician — write it for them
+- For INSTALLATION or SETUP tickets: the resolution MUST include:
+    * What was installed/configured and where
+    * Step-by-step instructions on HOW TO USE it (the user does not know)
+    * Any credentials, config files, or commands they need (e.g. "run: sudo openvpn --config /etc/openvpn/client.conf")
+    * What to do if it doesn't work (basic troubleshooting tip)
+  Example: after installing a VPN client, don't just say "OpenVPN installed". Instead:
+    "OpenVPN has been installed. To connect to a VPN: 1) Obtain a .ovpn config file from your VPN provider.
+     2) Run: sudo openvpn --config /path/to/your.ovpn  3) To verify the connection: curl ifconfig.me
+     If you need a specific VPN provider configured, please share the .ovpn file with your IT team."
 - You have {max_steps} total steps — use them wisely
 
 User's machine OS: {os}
@@ -414,6 +423,19 @@ WORKFLOW:
 7. FINISH — call finish(resolved=True) only after verification passes with concrete proof.
             If verification fails after 3 fix attempts, call finish(resolved=False, escalation_reason=
             "What I tried: ... What failed: ... What the technician should try next: ...")
+            The resolution text in finish() is read directly by the END USER — write it for them, not a technician.
+            For INSTALLATION or SETUP tickets, you MUST include in the resolution:
+              * What was installed/configured
+              * Step-by-step HOW TO USE instructions (assume the user has never used this before)
+              * Any commands, config files, or credentials they need to know
+              * A basic "what to do if it doesn't work" tip
+            Example — VPN installation resolution:
+              "OpenVPN has been installed on your machine. To connect to a VPN:
+               1. Get a .ovpn config file from your VPN provider or IT team.
+               2. Connect by running: sudo openvpn --config /path/to/your.ovpn
+               3. Verify the VPN is working: curl ifconfig.me (should show your VPN server's IP)
+               4. To disconnect: press Ctrl+C in the terminal where OpenVPN is running.
+               If you need a corporate VPN profile set up, share the .ovpn file with your IT team."
 
 SYSTEM CONTEXT (important):
 - This agent runs as root inside a systemd service. $(whoami) = root — never use it for the human user.
@@ -626,6 +648,7 @@ async def run_remediation_session(
     auto_mode:           bool = False,
     oversight_tech_id:   Optional[str] = None,
     oversight_tech_name: Optional[str] = None,
+    session_id:          Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the full agentic remediation loop for a ticket.
@@ -633,12 +656,16 @@ async def run_remediation_session(
     This is a long-running async coroutine — run it with asyncio.create_task()
     so it doesn't block the FastAPI request.
 
+    Pass session_id if the caller pre-created the session (e.g. to return it
+    immediately to the client before the coroutine runs).
+
     Returns a result dict with {session_id, resolved, explanation, step_count}.
     """
     from routes.agent_routes import dispatch_tool_call, is_agent_connected
 
     db = DatabaseConnection()
-    session_id = _create_session(db, ticket_number, device_id, user_id)
+    if not session_id:
+        session_id = _create_session(db, ticket_number, device_id, user_id)
 
     # Store oversight tech and notify them
     if oversight_tech_id:

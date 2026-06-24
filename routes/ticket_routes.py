@@ -876,8 +876,13 @@ def update_ticket_status(
     if role not in ("admin", "tech_lead") and ticket.get("assigned_tech_id") != tech_id:
         raise HTTPException(status_code=403, detail="You can only update tickets assigned to you")
 
-    picklist_loader = get_picklist_loader()
-    status_val = picklist_loader.get_value("status", req.status) or req.status
+    ALLOWED_STATUSES = {
+        "Open", "In Progress", "Pending", "Pending Agent", "Resolved",
+        "Closed", "On Hold", "Escalated", "Cancelled", "Awaiting User", "Reopened",
+    }
+    if req.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {req.status}")
+    status_val = req.status
 
     extra = {}
     if req.status in ("Resolved", "Closed"):
@@ -1213,6 +1218,77 @@ def _list_technicians_impl(payload):
 @router.get("/tickets/technicians", tags=["tickets"])
 def list_active_technicians(payload: dict = Depends(require_tech)):
     return _list_technicians_impl(payload)
+
+
+# ── Chat-action: user asks AI agent to perform a task from the chat sidebar ───
+
+class ChatActionRequest(BaseModel):
+    task: str          # What the user asked the AI to do (e.g. "Set up OpenVPN for me")
+    user_id: str
+
+
+@router.post("/tickets/{ticket_number}/chat-action", tags=["tickets"])
+async def start_chat_action(
+    ticket_number: str,
+    req: ChatActionRequest,
+    payload: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """
+    Trigger a new agent remediation session from the AI chat sidebar.
+    Uses the user's task description (not the original ticket description).
+    Returns session_id immediately; steps stream via SSE at /api/sessions/{session_id}/stream.
+    """
+    from routes.agent_routes import get_connected_device_for_user, get_device_metadata, is_agent_auto_mode, dispatch_tool_call
+    from src.graph.remediation_graph import run_remediation_session, _create_session
+    from src.database.db_connection import DatabaseConnection as _DBConn
+    import asyncio
+    import uuid as _uuid
+
+    db = get_db_connection()
+
+    # Verify ticket exists and belongs to the calling user
+    rows = db.execute_query(
+        "SELECT ticketnumber, title, description, issuetype, user_id, assigned_tech_id "
+        "FROM new_tickets WHERE ticketnumber=%s",
+        (ticket_number,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = rows[0]
+
+    caller_id = payload.get("sub")
+    if ticket.get("user_id") != caller_id:
+        raise HTTPException(status_code=403, detail="Not your ticket")
+
+    # Find the user's connected device
+    device_id = get_connected_device_for_user(caller_id)
+    if not device_id:
+        raise HTTPException(status_code=409, detail="No desktop agent connected. Please start the agent on your machine.")
+
+    meta = get_device_metadata(device_id)
+    device_os = meta.get("os") or meta.get("platform") or "Linux"
+
+    # Pre-create the session so we can return session_id immediately for SSE streaming
+    _rdb = _DBConn()
+    session_id = _create_session(_rdb, ticket_number, device_id, caller_id)
+
+    # Start remediation session in background — task from chat overrides ticket description
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_remediation_session(
+        ticket_number=ticket_number,
+        device_id=device_id,
+        title=req.task,
+        description=req.task,
+        category=ticket.get("issuetype", "general_inquiry"),
+        user_id=caller_id,
+        device_os=device_os,
+        auto_mode=is_agent_auto_mode(device_id),
+        oversight_tech_id=ticket.get("assigned_tech_id"),
+        session_id=session_id,
+    ))
+
+    return {"success": True, "device_id": device_id, "task": req.task, "session_id": session_id}
 
 
 # ── Real-time ticket chat (WebSocket) ─────────────────────────────────────────
