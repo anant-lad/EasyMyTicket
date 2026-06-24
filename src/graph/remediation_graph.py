@@ -25,6 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from src.database.db_connection import DatabaseConnection
 from src.llm.provider import get_callbacks, get_llm, get_llm_for_tools
+from src.utils.logger import flow, Timer
 try:
     from agent.executor import list_available_commands
 except ImportError:
@@ -713,8 +714,10 @@ async def run_remediation_session(
         except Exception as e:
             log.warning("Could not set oversight tech: %s", e)
 
-    log.info("Remediation session started: ticket=%s device=%s session=%s auto_mode=%s",
-             ticket_number, device_id, session_id[:8], auto_mode)
+    flow(log, "AGENT:SESSION_START",
+         session=session_id[:8], ticket=ticket_number,
+         device=device_id, auto_mode=auto_mode,
+         oversight=oversight_tech_id or None)
 
     # ── Pre-fetch KB context ──────────────────────────────────────────────────
     kb_context = ""
@@ -723,11 +726,11 @@ async def run_remediation_session(
         kb_articles = db.search_kb(f"{title} {description}", top_k=3)
         if kb_articles:
             kb_context = format_kb_context(kb_articles)
-            log.info("Session %s: KB pre-fetch found %d articles", session_id[:8], len(kb_articles))
+            log.info("AGENT:KB_PREFETCH session=%s articles=%d", session_id[:8], len(kb_articles))
         else:
-            log.info("Session %s: no KB articles found for this ticket", session_id[:8])
+            log.info("AGENT:KB_PREFETCH session=%s articles=0", session_id[:8])
     except Exception as e:
-        log.warning("Session %s: KB pre-fetch failed (non-fatal): %s", session_id[:8], e)
+        log.warning("AGENT:KB_PREFETCH_FAILED session=%s error=%s", session_id[:8], e)
 
     # ── Pre-fetch similar resolved tickets ────────────────────────────────────
     similar_context = ""
@@ -795,26 +798,30 @@ async def run_remediation_session(
 
         # Check device is still connected
         if not is_agent_connected(device_id):
-            log.warning("Session %s: device %s disconnected at step %d",
-                        session_id[:8], device_id, step_count)
+            flow(log, "AGENT:DEVICE_DISCONNECTED",
+                 session=session_id[:8], device=device_id, step=step_count)
             escalation = "Device disconnected during remediation. Please reconnect the agent."
             break
 
         # LLM decides next action
-        log.info("Session %s step %d: invoking LLM...", session_id[:8], step_count)
+        _llm_t = Timer()
+        log.debug("AGENT:LLM_INVOKE session=%s step=%d", session_id[:8], step_count)
         try:
             response = await asyncio.wait_for(
                 asyncio.get_running_loop().run_in_executor(
                     None, lambda: llm.invoke(messages)
                 ),
-                timeout=90,  # 90 s max per step — prevents hang on Groq rate-limit stalls
+                timeout=90,
             )
+            log.debug("AGENT:LLM_DONE session=%s step=%d duration_ms=%d",
+                      session_id[:8], step_count, _llm_t.ms)
         except asyncio.TimeoutError:
-            log.error("Session %s: LLM timed out at step %d", session_id[:8], step_count)
-            escalation = f"LLM timed out at step {step_count} — Groq/OpenRouter did not respond within 90 s."
+            log.error("AGENT:LLM_TIMEOUT session=%s step=%d — no response in 90s",
+                      session_id[:8], step_count)
+            escalation = f"LLM timed out at step {step_count} — provider did not respond within 90s."
             break
         except Exception as e:
-            log.error("Session %s: LLM call failed at step %d: %s",
+            log.error("AGENT:LLM_ERROR session=%s step=%d error=%s",
                       session_id[:8], step_count, e)
             escalation = f"LLM error during step {step_count}: {e}"
             break
@@ -836,9 +843,11 @@ async def run_remediation_session(
             tc_id   = tool_call.get("id", str(uuid.uuid4()))
 
             reasoning = fn_args.get("reasoning", "")
-            log.info("Session %s step %d: %s(%s) — %s",
-                     session_id[:8], step_count, fn_name,
-                     fn_args.get("command", fn_name), reasoning)
+            flow(log, "AGENT:TOOL_CALL",
+                 session=session_id[:8], step=step_count,
+                 command=fn_args.get("command", fn_name),
+                 tool=fn_name,
+                 reason=reasoning[:100] if reasoning else None)
 
             # ── search_knowledge_base() — backend only, no device dispatch ────
             if fn_name == "search_knowledge_base":
@@ -848,11 +857,11 @@ async def run_remediation_session(
                     from src.database.db_connection import format_kb_context
                     results = db.search_kb(query, category=category, top_k=3)
                     content = format_kb_context(results) or "No relevant articles found in knowledge base."
-                    log.info("Session %s: KB search=%r → %d results",
+                    log.info("AGENT:KB_SEARCH session=%s query=%r results=%d",
                              session_id[:8], query[:60], len(results))
                 except Exception as e:
                     content = f"Knowledge base search failed: {e}"
-                    log.warning("Session %s: KB search error: %s", session_id[:8], e)
+                    log.warning("AGENT:KB_SEARCH_ERROR session=%s error=%s", session_id[:8], e)
                 _save_step(db, session_id, step_count, "reasoning",
                            llm_reasoning=f"KB search: {query}")
                 messages.append(ToolMessage(content=content, tool_call_id=tc_id))
@@ -904,10 +913,13 @@ async def run_remediation_session(
                     output    = result.get("output", "")
                     stderr    = result.get("stderr", "")
                     exit_code = result.get("exit_code", 0)
-
                     _save_step(db, session_id, step_count, "result",
                                command=command, output=output, stderr=stderr,
                                exit_code=exit_code)
+                    flow(log, "AGENT:TOOL_RESULT",
+                         session=session_id[:8], step=step_count,
+                         command=command, exit_code=exit_code,
+                         output_len=len(output), stderr_len=len(stderr))
                     tool_content = (
                         f"exit_code: {exit_code}\nstdout:\n{output[:8000]}"
                         + (f"\nstderr:\n{stderr[:2000]}" if stderr else "")
@@ -915,6 +927,8 @@ async def run_remediation_session(
                     messages.append(ToolMessage(content=tool_content, tool_call_id=tc_id))
 
                 except Exception as e:
+                    log.warning("AGENT:TOOL_FAILED session=%s step=%d command=%s error=%s",
+                                session_id[:8], step_count, command, e)
                     err_msg = f"Auto tool '{command}' failed: {e}"
                     _save_step(db, session_id, step_count, "result",
                                command=command, stderr=err_msg, exit_code=1)
@@ -965,11 +979,14 @@ async def run_remediation_session(
                     output   = result.get("output", "")
                     stderr   = result.get("stderr", "")
                     exit_code = result.get("exit_code", 0)
-
                     _save_step(db, session_id, step_count, "result",
                                command=command, output=output, stderr=stderr,
                                exit_code=exit_code)
-
+                    flow(log, "AGENT:TOOL_RESULT",
+                         session=session_id[:8], step=step_count,
+                         command=command, exit_code=exit_code,
+                         tier="tier2" if is_fix else "tier1",
+                         output_len=len(output))
                     tool_content = (
                         f"exit_code: {exit_code}\n"
                         f"stdout:\n{output[:4000]}\n"
@@ -979,6 +996,8 @@ async def run_remediation_session(
                     messages.append(ToolMessage(content=tool_content, tool_call_id=tc_id))
 
                 except (TimeoutError, RuntimeError) as e:
+                    log.warning("AGENT:TOOL_TIMEOUT session=%s step=%d command=%s error=%s",
+                                session_id[:8], step_count, command, e)
                     err_msg = f"Command failed: {e}"
                     _save_step(db, session_id, step_count, "result",
                                command=command, stderr=err_msg, exit_code=1)
@@ -1061,9 +1080,10 @@ async def run_remediation_session(
 
     _update_ticket(db, ticket_number, ticket_status, explanation)
 
-    log.info("Session %s %s after %d steps: %s",
-             session_id[:8], final_status, step_count,
-             explanation[:100] if explanation else "(none)")
+    flow(log, f"AGENT:SESSION_{final_status.upper()}",
+         session=session_id[:8], ticket=ticket_number,
+         steps=step_count, device=device_id,
+         resolution=(explanation[:120] if explanation else None))
 
     # Generate and upload markdown report for technician oversight
     try:

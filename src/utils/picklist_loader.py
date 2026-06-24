@@ -3,9 +3,12 @@ Picklist Loader Utility
 Loads and manages picklist values from CSV for data normalization
 """
 import csv
+import logging
 import os
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class PicklistLoader:
@@ -136,39 +139,32 @@ class PicklistLoader:
                 self.reverse_lookup[field] = {v.lower(): k for k, v in values.items()}
             return
         
-        print(f"📋 Loading picklist data from: {self.csv_path}")
-        
+        log.info("PICKLIST:LOADING path=%s", self.csv_path)
+
         with open(self.csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
+
             for row in reader:
                 field = row.get('Field', '').strip().lower()
                 value = row.get('Value', '').strip()
                 label = row.get('Label', '').strip()
-                
+
                 if not field or not value or not label:
                     continue
-                
-                # Initialize field dictionaries if not exists
+
                 if field not in self.picklist_data:
                     self.picklist_data[field] = {}
                     self.reverse_lookup[field] = {}
-                
-                # Store value -> label mapping
+
                 self.picklist_data[field][value] = label
-                
-                # Store label -> value mapping (case-insensitive for lookup)
-                # Handle multiple values mapping to same label by keeping first occurrence
+
                 label_lower = label.lower()
                 if label_lower not in self.reverse_lookup[field]:
                     self.reverse_lookup[field][label_lower] = value
-        
-        # Print summary
+
         total_fields = len(self.picklist_data)
         total_values = sum(len(values) for values in self.picklist_data.values())
-        print(f"✅ Loaded {total_values} picklist values across {total_fields} fields")
-        for field, values in self.picklist_data.items():
-            print(f"   - {field}: {len(values)} values")
+        log.info("PICKLIST:LOADED fields=%d values=%d", total_fields, total_values)
     
     def get_label(self, field: str, value: str) -> Optional[str]:
         """

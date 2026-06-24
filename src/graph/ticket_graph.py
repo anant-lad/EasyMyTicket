@@ -28,6 +28,7 @@ Usage:
     )
 """
 import logging
+import time
 from typing import Any, Dict
 
 from langgraph.graph import END, StateGraph
@@ -42,6 +43,7 @@ from src.graph.nodes import (
     notify_node,
 )
 from src.graph.state import TicketState
+from src.utils.logger import flow, Timer
 
 log = logging.getLogger(__name__)
 
@@ -129,17 +131,19 @@ def process_ticket(
     if existing_ticket_number:
         initial_state["ticket_number"] = existing_ticket_number
 
-    log.info("Starting ticket pipeline for user=%s source=%s ticket=%s",
-             user_id, source, existing_ticket_number or "new")
+    flow(log, "PIPELINE:START",
+         ticket=existing_ticket_number or "new",
+         user=user_id, source=source, device=device_id)
+    t = Timer()
     try:
         final_state = _graph.invoke(initial_state)
-        log.info(
-            "Pipeline complete — ticket=%s auto_resolve=%s tech=%s",
-            final_state.get("ticket_number"),
-            final_state.get("can_auto_resolve"),
-            final_state.get("assigned_tech_id"),
-        )
+        tkt = final_state.get("ticket_number", existing_ticket_number or "?")
+        route = "agent" if final_state.get("can_auto_resolve") else "tech"
+        tech  = final_state.get("assigned_tech_id") or final_state.get("assigned_tech_name")
+        flow(log, "PIPELINE:DONE",
+             ticket=tkt, route=route, tech=tech,
+             duration_ms=t.ms, errors=len(final_state.get("errors", [])))
         return final_state
     except Exception as e:
-        log.error("Ticket pipeline fatal error: %s", e)
+        log.error("PIPELINE:FATAL ticket=%s error=%s", existing_ticket_number or "new", e, exc_info=True)
         return {**initial_state, "errors": [str(e)], "ticket_number": existing_ticket_number or "FAILED"}

@@ -13,6 +13,7 @@ from src.database.db_connection import DatabaseConnection
 from src.config import Config
 from src.utils.picklist_loader import get_picklist_loader
 from src.auth.dependencies import get_current_user, require_tech, require_tech_lead, optional_user
+from src.utils.logger import flow
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +195,11 @@ async def create_ticket(
              ticket_request.user_id, ticket_request.source or "portal", *extra_vals),
             fetch=False,
         )
-        log.info("Ticket %s created instantly, pipeline queued", ticket_number)
+        flow(log, "TICKET:SUBMITTED",
+             ticket=ticket_number, user=ticket_request.user_id,
+             source=ticket_request.source or "portal",
+             device=effective_device_id or None,
+             title=ticket_request.title[:80])
 
         # ── Step 2: queue pipeline in background ────────────────────────────
         background_tasks.add_task(
@@ -320,9 +325,7 @@ async def get_all_tickets(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error retrieving tickets: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error("LIST_TICKETS:FAILED error=%s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f'Internal server error: {str(e)}'
@@ -439,13 +442,8 @@ async def get_ticket(ticket_number: str = Path(..., description="The ticket numb
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error retrieving ticket: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f'Internal server error: {str(e)}'
-        )
+        log.error("GET_TICKET:FAILED error=%s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 
 @router.get("/tickets/{ticket_number}/resolution", response_model=ResolutionResponse)
@@ -488,13 +486,8 @@ async def get_ticket_resolution(ticket_number: str = Path(..., description="The 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error retrieving ticket resolution: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f'Internal server error: {str(e)}'
-        )
+        log.error("GET_TICKET_RESOLUTION:FAILED error=%s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 
 @router.get("/health", response_model=HealthResponse)

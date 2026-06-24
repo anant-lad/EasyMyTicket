@@ -2,10 +2,15 @@
 Smart Ticket Assignment Agent
 Handles intelligent ticket assignment based on skills, availability, and workload
 """
-from typing import Optional, Dict, List, Tuple
-from src.database.db_connection import DatabaseConnection
-from datetime import datetime
+import logging
 import re
+from datetime import datetime
+from typing import Optional, Dict, List, Tuple
+
+from src.database.db_connection import DatabaseConnection
+from src.utils.logger import flow
+
+log = logging.getLogger(__name__)
 
 
 class SmartAssignmentAgent:
@@ -14,19 +19,53 @@ class SmartAssignmentAgent:
     def __init__(self, db_connection: DatabaseConnection):
         self.db_connection = db_connection
         
-        # Skill mapping from issue types (from analysis)
+        # Skill mapping from issue types — skills must be UNIQUE to the category.
+        # Do NOT mix skills across categories (e.g. hardware tickets should NOT list
+        # 'Network', or a Network tech will win due to lower workload).
         self.issue_type_skills = {
-            '11': ['Cloud', 'Email', 'Office 365', 'OneDrive', 'SharePoint', 'Cloud Workspace'],
-            '4': ['Hardware', 'Network', 'Assessment'],
-            '5': ['Software', 'Installation', 'SaaS'],
-            '6': ['Network', 'VPN', 'Remote Access'],
-            '7': ['Assessment', 'Network Analysis', 'Site Survey'],
-            '8': ['Server', 'Administration', 'Database'],
-            '9': ['Active Directory', 'File Permissions', 'Access Control'],
-            '13': ['Backup', 'DATTO', 'Azure', 'Backup Management'],
-            '14': ['Cybersecurity', 'Intrusion', 'Security'],
-            '15': ['Email', 'Security', 'Password'],
-            '18': ['Printer', 'Printing', 'Hardware'],
+            '4':  ['Hardware', 'Laptop', 'Equipment', 'Repair'],          # Hardware & Equipment
+            '5':  ['Software', 'Installation', 'SaaS', 'Application'],    # Software
+            '6':  ['Network', 'VPN', 'Remote Access', 'Firewall'],        # Network & Connectivity
+            '7':  ['Network', 'Site Survey', 'Assessment'],               # Network Assessment
+            '8':  ['Server', 'Administration', 'Database', 'Linux'],      # Server & Infrastructure
+            '9':  ['Active Directory', 'Access Control', 'Permissions'],  # Access & Identity
+            '11': ['Cloud', 'Email', 'Office 365', 'OneDrive', 'SharePoint'],  # Cloud & Productivity
+            '13': ['Backup', 'DATTO', 'Azure', 'Recovery'],              # Backup & DR
+            '14': ['Cybersecurity', 'Security', 'Intrusion'],            # Security
+            '15': ['Email', 'Password', 'Account'],                      # Email & Accounts
+            '18': ['Printer', 'Printing', 'Hardware'],                   # Printing
+        }
+
+        # Title keyword → required skill injection.
+        # If the ticket title/description contains these words, inject the
+        # corresponding skill even if the issuetype mapping didn't include it.
+        self.keyword_skill_map = {
+            # Hardware keywords
+            'touchpad': 'Hardware', 'keyboard': 'Hardware', 'mouse': 'Hardware',
+            'trackpad': 'Hardware', 'screen': 'Hardware', 'display': 'Hardware',
+            'monitor': 'Hardware', 'hdmi': 'Hardware', 'usb': 'Hardware',
+            'camera': 'Hardware', 'webcam': 'Hardware', 'battery': 'Hardware',
+            'charger': 'Hardware', 'laptop': 'Hardware', 'hardware': 'Hardware',
+            'broken': 'Hardware', 'damaged': 'Hardware', 'replacement': 'Hardware',
+            'printer': 'Printer', 'scanner': 'Hardware',
+            # Network keywords
+            'wifi': 'Network', 'wi-fi': 'Network', 'wireless': 'Network',
+            'ethernet': 'Network', 'vpn': 'VPN', 'internet': 'Network',
+            'firewall': 'Firewall', 'dns': 'Network', 'ping': 'Network',
+            'bluetooth': 'Hardware',
+            # Software keywords
+            'install': 'Software', 'uninstall': 'Software', 'crash': 'Software',
+            'software': 'Software', 'application': 'Software', 'app': 'Software',
+            'update': 'Software', 'upgrade': 'Software',
+            # Cloud/Email keywords
+            'email': 'Email', 'outlook': 'Email', 'office': 'Office 365',
+            'teams': 'Cloud', 'onedrive': 'OneDrive', 'sharepoint': 'SharePoint',
+            # Security keywords
+            'password': 'Password', 'login': 'Account', 'access': 'Access Control',
+            'locked': 'Account', 'permission': 'Permissions',
+            # Server keywords
+            'server': 'Server', 'database': 'Database', 'linux': 'Linux',
+            'ssh': 'Linux', 'docker': 'Linux',
         }
     
     def assign_ticket(self, ticket_data: Dict, classification: Dict) -> Optional[str]:
@@ -40,42 +79,45 @@ class SmartAssignmentAgent:
         Returns:
             tech_id of assigned technician or None
         """
-        print(f"\n🎯 Starting smart ticket assignment...")
-        print(f"   Ticket: {ticket_data.get('title', 'N/A')[:60]}")
-        
-        # Extract required skills from classification
-        required_skills = self._extract_required_skills(classification)
-        print(f"   Required skills: {required_skills}")
-        
+        ticket_num = ticket_data.get('ticketnumber', '?')
+        log.info("ASSIGN:START ticket=%s title=%s",
+                 ticket_num, ticket_data.get('title', 'N/A')[:60])
+
+        # Extract required skills from classification + ticket keywords
+        required_skills = self._extract_required_skills(classification, ticket_data)
+        log.debug("ASSIGN:SKILLS ticket=%s skills=%s", ticket_num, required_skills)
+
         # Get available technicians
         available_techs = self._get_available_technicians()
-        
+
         if not available_techs:
-            print("   ⚠️  No available technicians found")
+            log.warning("ASSIGN:NO_TECHS ticket=%s — no available technicians", ticket_num)
             return None
-        
-        print(f"   Found {len(available_techs)} available technicians")
-        
+
+        log.debug("ASSIGN:TECHS_FOUND ticket=%s count=%d", ticket_num, len(available_techs))
+
         # Match skills and score technicians
         scored_techs = self._score_technicians(available_techs, required_skills)
-        
+
         if not scored_techs:
-            print("   ℹ️  No technicians with matching skills, using reranker...")
-            # Fallback: Use reranker to find best match
+            log.info("ASSIGN:RERANKING ticket=%s — no direct skill match, using semantic reranker",
+                     ticket_num)
             scored_techs = self._rerank_technicians(available_techs, ticket_data, required_skills)
-        
+
         if not scored_techs:
-            print("   ⚠️  No suitable technician found after reranking")
+            log.warning("ASSIGN:NO_MATCH ticket=%s — reranker found nothing", ticket_num)
             return None
-        
+
         # Sort by skill score (desc) then workload (asc)
         scored_techs.sort(key=lambda x: (-x['score'], x['workload']))
-        
+
         # Assign to best match
         best_match = scored_techs[0]
         tech_id = best_match['tech_id']
-        
-        print(f"   ✅ Best match: {best_match['tech_name']} (Score: {best_match['score']}, Workload: {best_match['workload']})")
+
+        flow(log, "TICKET:ASSIGNED_TECH",
+             ticket=ticket_num, tech=best_match['tech_name'],
+             score=best_match['score'], workload=best_match['workload'])
         
         # Record assignment
         self._record_assignment(
@@ -90,28 +132,32 @@ class SmartAssignmentAgent:
         
         return tech_id
     
-    def _extract_required_skills(self, classification: Dict) -> List[str]:
-        """Extract required skills from classification data"""
+    def _extract_required_skills(self, classification: Dict, ticket_data: Dict = None) -> List[str]:
+        """Extract required skills from classification + ticket title/description keywords."""
         skills = []
-        
-        # Helper to get value from potentially case-insensitive or nested classification
+
         def get_value(key):
             val = classification.get(key) or classification.get(key.upper()) or classification.get(key.lower())
             if isinstance(val, dict):
                 return val.get('Value') or val.get('value')
             return val
 
-        # Get skills from issuetype
+        # Skills from issuetype mapping
         issuetype = str(get_value('issuetype') or '')
         if issuetype in self.issue_type_skills:
             skills.extend(self.issue_type_skills[issuetype])
-        
-        # Add generic skills from priority
-        priority = str(get_value('priority') or '')
-        if priority and priority.lower() in ['high', 'critical', 'urgent', '1']:
-            skills.append('Urgent Support')
-        
-        return list(set(skills))  # Remove duplicates
+
+        # Inject skills from ticket title + description keyword scanning
+        if ticket_data:
+            text = (
+                (ticket_data.get('title') or '') + ' ' +
+                (ticket_data.get('description') or '')
+            ).lower()
+            for kw, skill in self.keyword_skill_map.items():
+                if kw in text and skill not in skills:
+                    skills.append(skill)
+
+        return list(set(skills))
     
     def _get_available_technicians(self) -> List[Dict]:
         """Get all available technicians"""
@@ -132,7 +178,7 @@ class SmartAssignmentAgent:
             tech_skills = tech.get('skills', '') or ''
             score = self._match_skills(required_skills, tech_skills)
             
-            if score > 30:  # Minimum threshold
+            if score > 20:  # Minimum threshold — 1 exact match out of 4 skills = 17, lower to capture those
                 scored.append({
                     'tech_id': tech['tech_id'],
                     'tech_name': tech['tech_name'],
@@ -186,7 +232,7 @@ class SmartAssignmentAgent:
         Rerank technicians using semantic analysis when no direct skill match
         Uses ticket title/description to find best match
         """
-        print("   🔄 Applying reranker for best match...")
+        log.debug("ASSIGN:SEMANTIC_RERANK running")
         
         ticket_text = f"{ticket_data.get('title', '')} {ticket_data.get('description', '')}"
         scored = []
@@ -210,35 +256,37 @@ class SmartAssignmentAgent:
     
     def _semantic_match_score(self, ticket_text: str, tech_skills: str, required_skills: List[str]) -> int:
         """
-        Calculate semantic match score using keyword overlap and tech skills
+        Calculate semantic match score.
+        Score is based on how many of the TICKET's meaningful words appear in the
+        tech's skill list — not the other way around, which would penalise techs
+        with broader skill sets.
         """
         if not tech_skills:
-            return 20  # Minimum score for available techs
-        
+            return 10
+
         ticket_lower = ticket_text.lower()
         skills_lower = tech_skills.lower()
-        
-        # Count keyword matches
-        skill_words = set(re.findall(r'\w+', skills_lower))
-        ticket_words = set(re.findall(r'\w+', ticket_lower))
-        
-        # Filter out common words
-        common_words = {'and', 'the', 'for', 'with', 'this', 'that', 'from', 'have', 'has'}
-        skill_words = skill_words - common_words
-        ticket_words = ticket_words - common_words
-        
-        # Calculate overlap
+
+        common_words = {
+            'and', 'the', 'for', 'with', 'this', 'that', 'from', 'have', 'has',
+            'not', 'are', 'was', 'but', 'its', 'or', 'is', 'in', 'on', 'at',
+            'to', 'a', 'an', 'it', 'my', 'me', 'we', 'be', 'do', 'no',
+        }
+
+        skill_words  = set(re.findall(r'\w+', skills_lower))  - common_words
+        ticket_words = set(re.findall(r'\w+', ticket_lower))  - common_words
+
+        # How many of the ticket's words appear in tech's skills?
         overlap = len(skill_words.intersection(ticket_words))
-        total_skill_words = len(skill_words) if skill_words else 1
-        
-        base_score = int((overlap / total_skill_words) * 60) if overlap > 0 else 20
-        
-        # Boost if required skills partially match
+        total_ticket_words = len(ticket_words) if ticket_words else 1
+        base_score = int((overlap / total_ticket_words) * 60) if overlap > 0 else 10
+
+        # Boost for each required skill that matches tech skills
         boost = 0
         for req_skill in required_skills:
             if req_skill.lower() in skills_lower:
-                boost += 10
-        
+                boost += 15  # Stronger per-skill boost (was 10)
+
         return min(base_score + boost, 100)
     
     def _record_assignment(self, ticket_number: str, tech_id: str, reason: str, score: int):
@@ -276,7 +324,7 @@ class SmartAssignmentAgent:
         """
         
         self.db_connection.execute_query(query, (tech_id,), fetch=False)
-        print(f"   ✅ Decremented workload for {tech_id}")
+        log.debug("ASSIGN:WORKLOAD_DECREMENT tech=%s", tech_id)
     
     def get_assignment_history(self, ticket_number: str) -> List[Dict]:
         """Get assignment history for a ticket"""

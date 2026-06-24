@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from src.auth.dependencies import get_current_user
 from src.database.db_connection import DatabaseConnection
+from src.utils.logger import flow, Timer
 
 router = APIRouter()
 log    = logging.getLogger(__name__)
@@ -124,7 +125,9 @@ async def agent_websocket(device_id: str, ws: WebSocket):
             _db_set_device_user(device_id, authenticated_user_id)
         except Exception as _e:
             log.warning("Could not persist device user_id for %s: %s", device_id, _e)
-    log.info("Agent connected: %s user=%s (total=%d)", device_id, authenticated_user_id or "anonymous", len(_connected_agents))
+    flow(log, "AGENT:CONNECTED",
+         device=device_id, user=authenticated_user_id or "anonymous",
+         total_agents=len(_connected_agents))
 
     try:
         while True:
@@ -160,11 +163,11 @@ async def agent_websocket(device_id: str, ws: WebSocket):
                 auto = bool(device_info.get("auto_mode", False))
                 _agent_auto_mode[device_id] = auto
                 _agent_device_metadata[device_id] = device_info
-                log.info("Agent registered: device_id=%s os=%s hostname=%s auto_mode=%s",
-                         device_id,
-                         device_info.get("os", "?"),
-                         device_info.get("hostname", "?"),
-                         auto)
+                flow(log, "AGENT:REGISTERED",
+                     device=device_id,
+                     os=device_info.get("os", "?"),
+                     hostname=device_info.get("hostname", "?"),
+                     auto_mode=auto)
                 _update_device_last_seen(device_id, device_info)
                 # E1: kick off any tickets that were queued while offline
                 asyncio.create_task(_auto_start_pending_sessions(device_id))
@@ -216,7 +219,8 @@ async def agent_websocket(device_id: str, ws: WebSocket):
             )
         except Exception as _e:
             log.warning("Could not mark device offline in DB: %s", _e)
-        log.info("Agent disconnected: %s (remaining=%d)", device_id, len(_connected_agents))
+        flow(log, "AGENT:DISCONNECTED",
+             device=device_id, remaining=len(_connected_agents))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

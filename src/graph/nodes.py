@@ -24,6 +24,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.graph.state import TicketState
 from src.llm.provider import get_callbacks, get_llm, get_small_llm
+from src.utils.logger import flow, Timer
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def create_ticket_node(state: TicketState) -> Dict:
 
     # Pre-created by API endpoint (async path) — just return the existing number
     if state.get("ticket_number"):
-        log.info("Ticket %s already exists, skipping INSERT", state["ticket_number"])
+        flow(log, "TICKET:EXISTS", ticket=state["ticket_number"], source=state.get("source"))
         return {"ticket_number": state["ticket_number"], "errors": list(state.get("errors", []))}
 
     ticket_number = f"TKT-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
@@ -78,9 +79,12 @@ def create_ticket_node(state: TicketState) -> Dict:
                 state.get("source", "portal"),
             ),
         )
-        log.info("Ticket %s created", ticket_number)
+        flow(log, "TICKET:CREATED",
+             ticket=ticket_number, user=state["user_id"],
+             source=state.get("source", "portal"),
+             title=state["title"][:80])
     except Exception as e:
-        log.error("create_ticket_node failed: %s", e)
+        log.error("create_ticket_node failed for %s: %s", ticket_number, e, exc_info=True)
         return {"ticket_number": ticket_number, "errors": [str(e)]}
 
     return {"ticket_number": ticket_number, "errors": []}
@@ -125,9 +129,35 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
         "ALLOWED VALUES — copy these strings exactly, character for character:\n"
         "{picklist}\n\n"
         "Field guidance:\n"
-        "- issuetype: physical device/peripheral → Hardware; app/OS/driver issue → Software; "
-        "connectivity → Network; login/password/permissions → Account/Access; "
-        "email/Teams/calendar → Email/Collaboration; cloud/server/infra → Cloud/Infrastructure\n"
+        "- issuetype: physical device/peripheral (keyboard/screen/battery/printer/webcam/mouse/trackpad) → Hardware; "
+        "app/OS/driver/software install/crash/update → Software; "
+        "VPN/tunnel/remote access/wifi/ethernet/internet/firewall/DNS/connectivity → Network; "
+        "login/password/permissions/account locked/MFA → Account/Access; "
+        "email/Teams/calendar/Outlook/OneDrive → Email/Collaboration; "
+        "cloud/server/infra/Azure/AWS/database/backup → Cloud/Infrastructure\n"
+        "- subissuetype: pick the single most specific match. Examples: "
+        "VPN setup/connect/disconnect → VPN/Remote Access; "
+        "wifi not connecting/slow → WiFi; "
+        "internet/WAN down → Internet/WAN; "
+        "camera/webcam not working → Camera/Webcam; "
+        "can't log in/forgot password → Password Reset; "
+        "account locked → Account Lockout; "
+        "no permission/access denied → Permissions/Access; "
+        "app crash/freeze → Crash/BSOD; "
+        "install/update app or OS → Application/Software or Operating System; "
+        "driver issue → Driver/Firmware; "
+        "slow machine → Performance/Speed; "
+        "printer → Printer/Scanner; "
+        "monitor/screen → Monitor/Display; "
+        "keyboard/mouse → Keyboard/Mouse/Peripherals; "
+        "laptop/desktop hardware → Laptop/Desktop; "
+        "audio/speaker/mic → Audio/Speaker/Microphone; "
+        "disk/storage → Storage/Disk; "
+        "virus/malware → Security/Virus; "
+        "backup → Backup/Restore; "
+        "email → Email; "
+        "hardware swap/replace → Hardware Replacement; "
+        "nothing matches → Other\n"
         "- ticketcategory: something broke or stopped working → Incident; "
         "user wants something new → Service Request; planned system change → Change; "
         "recurring/root-cause investigation → Problem\n"
@@ -193,14 +223,15 @@ def classify_node(state: TicketState) -> Dict:
             "picklist": picklist_text,
         })
         raw = _parse_json(resp.content) or {}
-        log.info("LLM classification raw=%s", json.dumps(raw)[:300])
         # Detect OpenRouter/provider error responses
         if "error" in raw and "issuetype" not in raw:
-            log.warning("Classification returned error body: %s", raw.get("error"))
+            log.warning("CLASSIFY:LLM_ERROR ticket=%s error=%s", ticket_number, raw.get("error"))
             raw = {}
+        else:
+            log.debug("CLASSIFY:LLM_RAW ticket=%s result=%s", ticket_number, json.dumps(raw)[:300])
         classification = raw
     except Exception as e:
-        log.warning("Classification failed: %s", e)
+        log.warning("CLASSIFY:LLM_FAILED ticket=%s error=%s", ticket_number, e)
         errors.append(f"classification: {e}")
 
     # Derive normalised category + priority
@@ -265,10 +296,11 @@ def classify_node(state: TicketState) -> Dict:
             return None
 
         # Build SET clause dynamically — only update fields that have a value
-        effective_priority = to_code("priority", classification.get("priority")) or priority
-        effective_issuetype = to_code("issuetype", classification.get("issuetype"))
-        effective_category  = to_code("ticketcategory", classification.get("ticketcategory"))
-        effective_type      = to_code("tickettype", classification.get("tickettype"))
+        effective_priority     = to_code("priority", classification.get("priority")) or priority
+        effective_issuetype    = to_code("issuetype", classification.get("issuetype"))
+        effective_category     = to_code("ticketcategory", classification.get("ticketcategory"))
+        effective_type         = to_code("tickettype", classification.get("tickettype"))
+        effective_subissuetype = to_code("subissuetype", classification.get("subissuetype"))
 
         set_parts = ["priority=%s"]
         params: list = [effective_priority]
@@ -281,18 +313,28 @@ def classify_node(state: TicketState) -> Dict:
         if effective_type:
             set_parts.append("tickettype=%s")
             params.append(effective_type)
+        if effective_subissuetype:
+            set_parts.append("subissuetype=%s")
+            params.append(effective_subissuetype)
         params.append(state["ticket_number"])
 
         db.execute_query(
             f"UPDATE new_tickets SET {', '.join(set_parts)} WHERE ticketnumber=%s",
             tuple(params),
         )
-        log.info(
-            "Classification persisted for %s: issuetype=%s ticketcategory=%s priority=%s",
-            state["ticket_number"], effective_issuetype, effective_category, effective_priority,
-        )
+        # Resolve human-readable labels for the flow log
+        pl = _get_picklist()
+        it_label  = pl.get_label("issuetype",    str(effective_issuetype))    if effective_issuetype    else None
+        sub_label = pl.get_label("subissuetype", str(effective_subissuetype)) if effective_subissuetype else None
+        pri_label = pl.get_label("priority",     str(effective_priority))     if effective_priority     else None
+        flow(log, "TICKET:CLASSIFIED",
+             ticket=state["ticket_number"],
+             issuetype=it_label or effective_issuetype,
+             subissuetype=sub_label or effective_subissuetype,
+             priority=pri_label or effective_priority,
+             similar=len(similar_tickets))
     except Exception as e:
-        log.warning("Could not persist classification: %s", e)
+        log.warning("CLASSIFY:PERSIST_FAILED ticket=%s error=%s", state.get("ticket_number"), e)
 
     return {
         "extracted_metadata": extracted_metadata,
@@ -385,12 +427,16 @@ def auto_route_decision_node(state: TicketState) -> Dict:
         confidence  = float(result.get("confidence", 0.0))
         reasoning   = result.get("reasoning", "")
         cmd_type    = result.get("suggested_first_command") or None
-        log.info(
-            "LLM routing for %s: can_agent_solve=%s (%.0f%%) device_os=%s — %s",
-            state.get("ticket_number"), can_resolve, confidence * 100, device_os, reasoning,
-        )
+        route = "AGENT" if can_resolve else "TECH"
+        flow(log, f"TICKET:ROUTED:{route}",
+             ticket=state.get("ticket_number"),
+             confidence=round(confidence, 2),
+             device=device_id or None,
+             device_os=device_os if device_id else None,
+             reason=reasoning[:120] if reasoning else None)
     except Exception as e:
-        log.warning("LLM routing failed, defaulting to human path: %s", e)
+        log.warning("ROUTE:LLM_FAILED ticket=%s — defaulting to tech path: %s",
+                    state.get("ticket_number"), e)
         errors.append(f"routing_llm: {e}")
 
     return {
@@ -546,18 +592,19 @@ def agent_task_node(state: TicketState) -> Dict:
             )
             if _main_loop and _main_loop.is_running():
                 _asyncio.run_coroutine_threadsafe(coro, _main_loop)
-                log.info("Agentic session launched: ticket=%s device=%s oversight=%s",
-                         ticket_number, device_id, oversight_tech_id)
+                flow(log, "AGENT:SESSION_QUEUED",
+                     ticket=ticket_number, device=device_id,
+                     oversight=oversight_tech_id, auto_mode=is_agent_auto_mode(device_id))
             else:
-                log.warning("Main event loop not available — cannot launch session for %s", ticket_number)
+                log.warning("AGENT:LOOP_MISSING ticket=%s — session NOT launched", ticket_number)
                 agent_connected = False
         except Exception as e:
-            log.warning("Could not launch remediation session: %s", e)
+            log.warning("AGENT:LAUNCH_FAILED ticket=%s error=%s", ticket_number, e)
             errors.append(f"session_launch: {e}")
             agent_connected = False
 
     if not agent_connected:
-        log.info("Device %r offline — ticket %s queued as Pending Agent", device_id or "none", ticket_number)
+        flow(log, "TICKET:PENDING_AGENT", ticket=ticket_number, device=device_id or "none")
         try:
             db = DatabaseConnection()
             if device_id:
@@ -607,9 +654,12 @@ def assign_technician_node(state: TicketState) -> Dict:
                 "UPDATE new_tickets SET assigned_tech_id=%s WHERE ticketnumber=%s",
                 (tech_id, state["ticket_number"]),
             )
+            flow(log, "TICKET:ASSIGNED_TECH", ticket=state["ticket_number"], tech=tech_id)
+        else:
+            log.warning("ASSIGN:NO_TECH_FOUND ticket=%s", state["ticket_number"])
         return {"assigned_tech_id": tech_id, "errors": errors}
     except Exception as e:
-        log.warning("Technician assignment failed: %s", e)
+        log.warning("ASSIGN:FAILED ticket=%s error=%s", state["ticket_number"], e)
         return {"assigned_tech_id": None, "errors": errors + [f"assignment: {e}"]}
 
 
@@ -664,11 +714,11 @@ def generate_resolution_node(state: TicketState) -> Dict:
             "similar": similar_text,
         })
         resolution = resp.content.strip()
+        flow(log, "TICKET:RESOLUTION_GENERATED",
+             ticket=state["ticket_number"], method="llm", chars=len(resolution))
     except Exception as e:
-        log.warning("Resolution generation failed: %s", e)
+        log.warning("RESOLUTION:LLM_FAILED ticket=%s error=%s", state["ticket_number"], e)
         errors.append(f"resolution_gen: {e}")
-        # Do not persist a generic fallback — leave resolution empty so the
-        # technician generates it on demand via the AI Suggestions panel.
         return {"resolution": None, "errors": errors}
 
     # Persist the LLM-generated resolution
@@ -680,7 +730,7 @@ def generate_resolution_node(state: TicketState) -> Dict:
             (resolution, state["ticket_number"]),
         )
     except Exception as e:
-        log.warning("Could not persist resolution: %s", e)
+        log.warning("RESOLUTION:PERSIST_FAILED ticket=%s error=%s", state["ticket_number"], e)
 
     return {"resolution": resolution, "errors": errors}
 
@@ -711,8 +761,11 @@ def notify_node(state: TicketState) -> Dict:
         )
         if result:
             sent = result if isinstance(result, list) else [str(result)]
+            flow(log, "TICKET:NOTIFIED",
+                 ticket=state["ticket_number"],
+                 recipients=len(sent), channels=",".join(sent[:3]))
     except Exception as e:
-        log.warning("Notification failed: %s", e)
+        log.warning("NOTIFY:FAILED ticket=%s error=%s", state["ticket_number"], e)
         errors.append(f"notify: {e}")
 
     return {"notifications_sent": sent, "errors": errors}
