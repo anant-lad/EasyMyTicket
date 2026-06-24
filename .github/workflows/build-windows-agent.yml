@@ -1,0 +1,93 @@
+name: Build Windows Agent EXE
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'EasyMyTicket/agent/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for release (e.g. v1.2.0)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: EasyMyTicket/agent
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Regenerate single-file bundle
+        run: python build_single_file.py
+        shell: pwsh
+
+      - name: Install dependencies + PyInstaller
+        run: |
+          pip install --upgrade pip
+          pip install websockets>=12.0 psutil>=5.9.0 httpx>=0.25.0 "ddgs>=9.0.0" pyinstaller
+        shell: pwsh
+
+      - name: Build EXE with PyInstaller
+        run: pyinstaller build.spec
+        shell: pwsh
+
+      - name: Verify EXE exists
+        run: |
+          $exe = "dist\windows\bin\easymyticket-agent.exe"
+          if (-not (Test-Path $exe)) { throw "EXE not found at $exe" }
+          $size = (Get-Item $exe).Length / 1MB
+          Write-Host "EXE built: $exe ($([math]::Round($size,1)) MB)"
+        shell: pwsh
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easymyticket-agent-windows-${{ github.sha }}
+          path: EasyMyTicket/agent/dist/windows/bin/easymyticket-agent.exe
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag or manual version input)
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: EasyMyTicket Agent ${{ github.event.inputs.version || github.ref_name }}
+          body: |
+            ## EasyMyTicket Desktop Agent — Windows
+
+            ### Quick Install (PowerShell as Administrator)
+            ```powershell
+            # Download and run the installer (recommended — handles Python, service, everything)
+            irm "https://YOUR-BACKEND/api/agent/installer/windows" -OutFile install.ps1
+            .\install.ps1 -ApiUrl "wss://YOUR-BACKEND" -UserId "USR001" -ApiKey "emt_xxxx"
+            ```
+
+            ### Or use the standalone EXE
+            Download `easymyticket-agent.exe` below and run:
+            ```
+            easymyticket-agent.exe --api-url wss://YOUR-BACKEND --api-key emt_xxxx
+            ```
+            (The EXE does not register as a service — use the PS1 installer for production deployment.)
+
+            ### What's included
+            - 70+ Tier-1 diagnostic commands (PowerShell/winget/netsh)
+            - 30+ Tier-2 fix commands with auto-restart on failure
+            - Auto mode (full shell + file access when enabled)
+            - Daily health scan (disk/CPU/memory/battery/services/security/updates)
+            - Offline queue: results persist across disconnections
+          files: EasyMyTicket/agent/dist/windows/bin/easymyticket-agent.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
